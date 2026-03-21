@@ -335,8 +335,8 @@ let player;
 // Dash afterimage trail
 let dashAfterimages = [];
 
-function playerEffectiveDmg(w) { return w.baseDmg * player.stats.damage * (1 + (w.level - 1) * 0.5); }
-function playerEffectiveRate(w) { return (w.baseRate || 1) * player.stats.atkSpd * (1 + (w.level - 1) * 0.2); }
+function playerEffectiveDmg(w) { return w.baseDmg * player.stats.damage * (1 + (w.level - 1) * 0.25); }
+function playerEffectiveRate(w) { return (w.baseRate || 1) * player.stats.atkSpd * (1 + (w.level - 1) * 0.12); }
 function playerEffectiveRange(w) { return w.range * player.stats.range; }
 
 function playerTakeDamage(amt) {
@@ -601,7 +601,7 @@ function spawnEnemy(type, x, y) {
         else { x = -25; y = rand(0, H); }
     }
     const def = ENEMY_DEFS[type];
-    const scale    = 1 + (wave - 1) * 0.20;
+    const scale    = 1 + (wave - 1) * 0.30;
     const spdScale = 1 + (wave - 1) * 0.07;
     return {
         ...def, x, y,
@@ -967,15 +967,18 @@ function generateShopOptions(count = 4) {
                     id: uid,
                     name: `${w.name} Lv${w.level + 1}`,
                     emoji: w.emoji,
-                    desc: `Upgrade: +50% dmg, +20% speed`,
+                    desc: `Upgrade: +25% dmg, +12% speed`,
                     cost: 4 + w.level * 3,
                     cat: 'upgrade',
-                    apply: (p) => { p.weapons[i].level++; p.weapons[i].baseDmg *= 1.5; },
+                    apply: (p) => { p.weapons[i].level++; p.weapons[i].baseDmg *= 1.25; },
                 });
             }
         }
     }
-    return shuffle([...available, ...weaponUpgrades]).slice(0, count);
+    const priceScale = 1 + (wave - 1) * 0.15;  // +15% cost per wave
+    const allOptions = shuffle([...available, ...weaponUpgrades]).slice(0, count);
+    allOptions.forEach(o => { o.cost = Math.ceil(o.cost * priceScale); });
+    return allOptions;
 }
 
 function buyUpgrade(idx) {
