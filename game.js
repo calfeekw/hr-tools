@@ -1445,9 +1445,10 @@ function update(dt) {
             enemies.push(e);
             spawnTimer = Math.max(0.18, 1.3 - wave * 0.07);
         }
+        buildEnemyGrid(); // Build spatial grid once per frame for fast collision lookups
         updatePlayer(dt);
         updateEnemies(dt);
-        buildEnemyGrid(); // Build spatial grid once per frame for fast collision lookups
+        buildEnemyGrid(); // Rebuild after enemy positions changed
         updateBullets(dt);
 
         // Wave announcement timer
@@ -2803,7 +2804,7 @@ function applyEvolution(recipe) {
 const GRID_CELL = 80; // cell size in pixels
 const GRID_COLS = Math.ceil(W / GRID_CELL);
 const GRID_ROWS = Math.ceil(H / GRID_CELL);
-let spatialGrid = [];
+let spatialGrid = new Array(Math.ceil(W / 80) * Math.ceil(H / 80)).fill(null).map(() => []);
 
 function resetGrid() {
     spatialGrid = new Array(GRID_COLS * GRID_ROWS);
