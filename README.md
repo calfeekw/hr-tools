@@ -1,108 +1,33 @@
-# Office Wars
+# HR Tools
 
-A Brotato-inspired survival game set in a corporate office. Fight waves of rogue coworkers using office supplies as weapons, level up between rounds, and survive 20 waves to escape the workplace. A full run takes roughly 15–20 minutes — if you can make it out alive.
+A collection of tools and games built by the HRIS team.
 
-<!-- Add a gameplay screenshot or GIF here -->
-<!-- ![Office Wars gameplay](screenshots/gameplay.gif) -->
+## Projects
 
-## How to Play
+### Office Wars
 
-- **WASD / Arrow Keys** — Move
-- **Mouse** — Aim (weapons auto-fire toward cursor)
-- **Space** — Dash (short invincible dodge)
+A Brotato-inspired survival game set in a corporate office. Fight waves of rogue coworkers using office supplies as weapons, level up between rounds, and survive 20 waves to escape the workplace.
 
-Survive each wave, collect XP and materials from defeated enemies, then spend materials in the shop between waves to buy upgrades and new weapons.
+**Features:**
+- 6 playable characters — Developer, Intern, Manager, IT Admin, Accountant, HR Rep
+- 8 unique weapons — Stapler, Rubber Band, Coffee Mug, Keyboard, USB Drive, Laser Pointer, Sticky Note, TPS Report
+- 20 waves of enemies with 4 boss fights (CFO, HR Director, CTO, CEO)
+- Shop system with stat upgrades, new weapons, and weapon leveling
+- Combo system for XP multipliers
+- Runs entirely in the browser — no dependencies
 
-## Characters
+**Play it:** Open `hr-tools/fervent-hamilton/index.html` in any browser, or serve locally:
 
-| Character | Style | Starting Weapon |
-|-----------|-------|-----------------|
-| The Developer | Balanced all-rounder | Stapler |
-| The Intern | Fast & fragile | Rubber Band |
-| The Manager | Tanky bruiser | Coffee Mug |
-| IT Admin | Range specialist | Laser Pointer |
-| The Accountant | Slow powerhouse | TPS Report |
-| HR Rep | Sustain fighter | Sticky Note |
-
-## Weapons
-
-| Weapon | Type | Description |
-|--------|------|-------------|
-| Stapler | Ranged | Reliable mid-range shots |
-| Rubber Band | Ranged | Rapid-fire, low damage |
-| Coffee Mug | Ranged | Slow AOE splash |
-| Keyboard | Melee | Close-range smash |
-| USB Drive | Orbital | Orbits around player |
-| Laser Pointer | Ranged | Fast piercing shots |
-| Sticky Note | Ranged | Slows enemies + poison DOT |
-| TPS Report | Ranged | Massive AOE slam, very slow |
-
-## Enemies
-
-Regular enemies spawn in increasing numbers each wave:
-
-| Enemy | Behavior |
-|-------|----------|
-| Intern | Weak, fast, swarms in groups |
-| Manager | Tanky, charges at player |
-| Printer | Stationary, fires paper jams |
-| HR Rep | Heals nearby enemies |
-| IT Guy | Teleports, drops debuffs |
-| Accountant | Slow, hits hard, high HP |
-
-### Boss Fights
-
-Boss encounters happen every 5 waves, each with unique mechanics:
-
-| Wave | Boss | Description |
-|------|------|-------------|
-| 5 | CFO | Budget-powered attacks |
-| 10 | HR Director | Summons policy enforcers |
-| 15 | CTO | Tech-based assault patterns |
-| 20 | CEO | Final boss — all abilities combined |
-
-## Progression
-
-- **XP** — Kill enemies to earn XP and level up, unlocking stat upgrades
-- **Materials** — Dropped by enemies, spent in the shop between waves
-- **Combo System** — Chain kills quickly for XP multipliers (up to 3x)
-- **Shop** — Buy new weapons (up to 6), upgrade existing weapons (up to level 3), or boost stats like damage, speed, armor, and lifesteal. Prices increase each wave.
+```bash
+cd hr-tools/fervent-hamilton
+npx serve .
+```
 
 ## Tech Stack
 
-- Vanilla JavaScript (ES6+)
-- HTML5 Canvas for rendering
-- No external dependencies
-
-## Status / Roadmap
-
-- :white_check_mark: Core gameplay loop (movement, shooting, waves)
-- :white_check_mark: 6 playable characters with unique stats
-- :white_check_mark: 8 weapons with distinct behaviors
-- :white_check_mark: Shop system between waves
-- :white_check_mark: Boss fights every 5 waves
-- :construction: Sound effects & music
-- :construction: Visual polish & particle effects
-- :memo: Mobile / touch controls
-- :memo: Leaderboard / high score persistence
-- :memo: Additional characters & weapons
+- Vanilla JavaScript + HTML5 Canvas
+- No frameworks or build tools — just open and play
 
 ## Running Locally
 
-Open `index.html` in any modern browser, or serve with a static file server:
-
-```bash
-npx serve .
-# or
-python -m http.server 8080
-```
-
-Best experienced in Chrome or Firefox on desktop. Mobile is not currently supported.
-
-## Contributing
-
-Pull requests are welcome. If you find a bug or have a feature idea, open an issue first so we can discuss the approach.
-
-## License
-
-<!-- Add your license here, e.g. MIT -->
+Each project is a self-contained folder with an `index.html`. Open it directly in a browser or use any static file server.
