@@ -2,6 +2,9 @@
 // OFFICE WARS — A Brotato-like Office Survival Game
 // ============================================================
 
+// ============================================================
+// 1. CONSTANTS & CANVAS SETUP
+// ============================================================
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const W = 800, H = 600;
@@ -9,7 +12,7 @@ canvas.width = W;
 canvas.height = H;
 
 // ============================================================
-// UTILS
+// 2. UTILS
 // ============================================================
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 function norm(dx, dy) { const d = Math.sqrt(dx * dx + dy * dy); return d > 0 ? { x: dx / d, y: dy / d } : { x: 0, y: 0 }; }
@@ -36,19 +39,25 @@ function wrapText(text, maxWidth) {
 }
 
 // ============================================================
-// INPUT
+// 3. INPUT (keys, mouse with coord transform)
 // ============================================================
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault(); });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 const mouse = { x: 0, y: 0, down: false };
-canvas.addEventListener('mousemove', e => { const r = canvas.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; });
+
+// Transform mouse coords from screen space to logical space
+canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * (W / r.width);
+    mouse.y = (e.clientY - r.top) * (H / r.height);
+});
 canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
 canvas.addEventListener('mouseup',   e => { if (e.button === 0) mouse.down = false; });
 window.addEventListener('blur', () => { mouse.down = false; });
 
 // ============================================================
-// AUDIO
+// 4. AUDIO (all existing SFX + sfxDash + BG music)
 // ============================================================
 let audioCtx = null;
 let musicGain = null;
@@ -129,6 +138,13 @@ function sfxBossAppear() {
     const ac = getAC(); if (!ac) return;
     for (let i = 0; i < 5; i++) schedOsc(440 / (i + 1), ac.currentTime + i * 0.14, 0.2, 'sawtooth', 0.25);
 }
+function sfxDash() {
+    const ac = getAC(); if (!ac) return;
+    const t = ac.currentTime;
+    schedNoise(t, 0.12, 0.2, 800);
+    schedOsc(600, t, 0.06, 'sine', 0.12);
+    schedOsc(400, t + 0.04, 0.08, 'sine', 0.08);
+}
 
 // Background music loop
 let _musicNextStart = 0;
@@ -167,18 +183,81 @@ function scheduleMusicLoop() {
 }
 
 // ============================================================
-// GAME STATE
+// 5. GAME STATE, CHARACTERS, OBSTACLES
 // ============================================================
-const STATE = { MENU: 'menu', PLAYING: 'playing', WAVE_END: 'wave_end', SHOP: 'shop', GAME_OVER: 'game_over', VICTORY: 'victory' };
+const STATE = { MENU: 'menu', CHAR_SELECT: 'char_select', PLAYING: 'playing', WAVE_END: 'wave_end', SHOP: 'shop', GAME_OVER: 'game_over', VICTORY: 'victory' };
 let gameState = STATE.MENU;
 let wave = 0;
 const MAX_WAVES = 20;
 let waveTransitionTimer = 0;
-let screenShake = { x: 0, y: 0, t: 0 };
+let screenShake = { x: 0, y: 0, t: 0, mag: 0 };
 
-// ============================================================
-// OBSTACLES
-// ============================================================
+// Combo system globals
+let comboCount = 0;
+let comboTimer = 0;
+
+// Wave announcement
+let waveAnnounceTimer = 0;
+
+// End-of-wave magnet
+let magnetActive = false;
+let magnetTimer = 0;
+
+// Gameplay stats
+const stats = { kills: 0, damageDealt: 0, highestCombo: 0, wavesCompleted: 0 };
+function resetStats() { stats.kills = 0; stats.damageDealt = 0; stats.highestCombo = 0; stats.wavesCompleted = 0; }
+
+// Selected character
+let selectedChar = null;
+
+// Character definitions
+const CHARACTERS = {
+    developer: {
+        id: 'developer', name: 'The Developer', emoji: '\u{1F9D1}\u200D\u{1F4BB}', // 🧑‍💻
+        desc: 'Balanced all-rounder.',
+        hp: 100, speed: 1.0, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
+        startWeapon: 'stapler',
+        passive: 'None', passiveDesc: 'No special passive.'
+    },
+    intern: {
+        id: 'intern', name: 'The Intern', emoji: '\u{1F9D1}\u200D\u{1F393}', // 🧑‍🎓
+        desc: 'Fast & fragile.',
+        hp: 75, speed: 1.3, damage: 0.9, atkSpd: 1.15, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
+        startWeapon: 'rubberband',
+        passive: 'Caffeine Rush', passiveDesc: '+30% speed, +15% atk spd.'
+    },
+    manager: {
+        id: 'manager', name: 'The Manager', emoji: '\u{1F454}', // 👔
+        desc: 'Tanky bruiser.',
+        hp: 150, speed: 0.9, damage: 1.15, atkSpd: 0.85, range: 1.0, armor: 3, lifesteal: 0, luck: 0,
+        startWeapon: 'coffeemug',
+        passive: 'Authority', passiveDesc: '+3 armor, +15% damage.'
+    },
+    itadmin: {
+        id: 'itadmin', name: 'IT Admin', emoji: '\u{1F4BB}', // 💻
+        desc: 'Range specialist.',
+        hp: 90, speed: 1.0, damage: 1.0, atkSpd: 1.1, range: 1.3, armor: 0, lifesteal: 0, luck: 0,
+        startWeapon: 'laser',
+        passive: 'Long Reach', passiveDesc: '+30% range, +10% atk spd.'
+    },
+    accountant: {
+        id: 'accountant', name: 'The Accountant', emoji: '\u{1F9EE}', // 🧮
+        desc: 'Slow powerhouse.',
+        hp: 110, speed: 0.85, damage: 1.35, atkSpd: 0.7, range: 1.0, armor: 2, lifesteal: 0, luck: 2,
+        startWeapon: 'tpsreport',
+        passive: 'Bean Counter', passiveDesc: '+35% dmg, +2 armor, +2 luck.'
+    },
+    hrrep: {
+        id: 'hrrep', name: 'HR Rep', emoji: '\u{1F4CB}', // 📋
+        desc: 'Sustain fighter.',
+        hp: 85, speed: 1.05, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0.08, luck: 0,
+        startWeapon: 'sticky',
+        passive: 'Compliance', passiveDesc: '+8% lifesteal, +5% speed.'
+    }
+};
+const CHAR_ORDER = ['developer', 'intern', 'manager', 'itadmin', 'accountant', 'hrrep'];
+
+// Obstacles
 const OBSTACLES = [
     { x: 120, y: 100, w: 90, h: 55 },
     { x: 590, y: 100, w: 90, h: 55 },
@@ -204,40 +283,57 @@ function pushOutRect(entity, r) {
 }
 
 // ============================================================
-// WEAPON DEFINITIONS
+// 6. WEAPON DEFINITIONS
 // ============================================================
 const WEAPONS = {
-    stapler: { id: 'stapler', name: 'Stapler', emoji: '📎', color: '#888', baseDmg: 14, baseRate: 1.8, range: 280, projSpeed: 420, type: 'ranged' },
-    rubberband: { id: 'rubberband', name: 'Rubber Band', emoji: '🔗', color: '#ff0', baseDmg: 5, baseRate: 5.5, range: 240, projSpeed: 580, type: 'ranged' },
-    coffeemug: { id: 'coffeemug', name: 'Coffee Mug', emoji: '☕', color: '#8B4513', baseDmg: 35, baseRate: 0.7, range: 220, projSpeed: 260, aoe: 55, type: 'ranged' },
-    keyboard: { id: 'keyboard', name: 'Keyboard', emoji: '⌨️', color: '#aaa', baseDmg: 28, baseRate: 1.3, range: 68, type: 'melee' },
-    usb: { id: 'usb', name: 'USB Drive', emoji: '💾', color: '#0af', baseDmg: 9, baseRate: 2, range: 80, type: 'orbital', orbitR: 72, orbitSpd: 3.2 },
-    laser: { id: 'laser', name: 'Laser Pointer', emoji: '🔴', color: '#f00', baseDmg: 9, baseRate: 4.5, range: 210, projSpeed: 720, pierce: 3, type: 'ranged' },
-    sticky: { id: 'sticky', name: 'Sticky Note', emoji: '📝', color: '#ffe44d', baseDmg: 5, baseRate: 2, range: 250, projSpeed: 210, slow: 0.45, dotDps: 4, dotDur: 3, type: 'ranged' },
-    tpsreport: { id: 'tpsreport', name: 'TPS Report', emoji: '📄', color: '#ddd', baseDmg: 90, baseRate: 0.38, range: 200, projSpeed: 175, aoe: 95, type: 'ranged' },
+    stapler: { id: 'stapler', name: 'Stapler', emoji: '\u{1F4CE}', color: '#888', baseDmg: 14, baseRate: 1.8, range: 280, projSpeed: 420, type: 'ranged' },
+    rubberband: { id: 'rubberband', name: 'Rubber Band', emoji: '\u{1F517}', color: '#ff0', baseDmg: 5, baseRate: 5.5, range: 240, projSpeed: 580, type: 'ranged' },
+    coffeemug: { id: 'coffeemug', name: 'Coffee Mug', emoji: '\u2615', color: '#8B4513', baseDmg: 35, baseRate: 0.7, range: 220, projSpeed: 260, aoe: 55, type: 'ranged' },
+    keyboard: { id: 'keyboard', name: 'Keyboard', emoji: '\u2328\uFE0F', color: '#aaa', baseDmg: 28, baseRate: 1.3, range: 68, type: 'melee' },
+    usb: { id: 'usb', name: 'USB Drive', emoji: '\u{1F4BE}', color: '#0af', baseDmg: 9, baseRate: 2, range: 80, type: 'orbital', orbitR: 72, orbitSpd: 3.2 },
+    laser: { id: 'laser', name: 'Laser Pointer', emoji: '\u{1F534}', color: '#f00', baseDmg: 9, baseRate: 4.5, range: 210, projSpeed: 720, pierce: 3, type: 'ranged' },
+    sticky: { id: 'sticky', name: 'Sticky Note', emoji: '\u{1F4DD}', color: '#ffe44d', baseDmg: 5, baseRate: 2, range: 250, projSpeed: 210, slow: 0.45, dotDps: 4, dotDur: 3, type: 'ranged' },
+    tpsreport: { id: 'tpsreport', name: 'TPS Report', emoji: '\u{1F4C4}', color: '#ddd', baseDmg: 90, baseRate: 0.38, range: 200, projSpeed: 175, aoe: 95, type: 'ranged' },
 };
 
 // ============================================================
-// PLAYER
+// 7. PLAYER (createPlayer with char support, dash, combo)
 // ============================================================
-function createPlayer() {
+function createPlayer(charId) {
+    const ch = CHARACTERS[charId || 'developer'];
+    selectedChar = ch;
     return {
         x: W / 2, y: H / 2,
         radius: 16,
         baseSpeed: 165,
-        hp: 100, maxHp: 100,
+        hp: ch.hp, maxHp: ch.hp,
         xp: 0, xpToNext: 25, level: 1,
         materials: 0,
-        stats: { damage: 1, atkSpd: 1, range: 1, speed: 1, armor: 0, regen: 0, lifesteal: 0, luck: 0 },
-        weapons: [{ ...WEAPONS.stapler, level: 1 }],
+        stats: {
+            damage: ch.damage,
+            atkSpd: ch.atkSpd,
+            range: ch.range,
+            speed: ch.speed,
+            armor: ch.armor,
+            regen: 0,
+            lifesteal: ch.lifesteal,
+            luck: ch.luck
+        },
+        weapons: [{ ...WEAPONS[ch.startWeapon], level: 1 }],
         weaponTimers: { 0: 0 },
         orbAngles: {},
         invTimer: 0, invDur: 0.25,
         regenTimer: 0,
         facing: 1,
+        dashCooldown: 2.5,
+        dashTimer: 0,
+        isDashing: false,
     };
 }
 let player;
+
+// Dash afterimage trail
+let dashAfterimages = [];
 
 function playerEffectiveDmg(w) { return w.baseDmg * player.stats.damage * (1 + (w.level - 1) * 0.5); }
 function playerEffectiveRate(w) { return (w.baseRate || 1) * player.stats.atkSpd * (1 + (w.level - 1) * 0.2); }
@@ -245,6 +341,7 @@ function playerEffectiveRange(w) { return w.range * player.stats.range; }
 
 function playerTakeDamage(amt) {
     if (player.invTimer > 0) return;
+    if (player.isDashing) return;
     const dmg = Math.max(1, amt - player.stats.armor);
     player.hp -= dmg;
     player.invTimer = player.invDur;
@@ -256,14 +353,24 @@ function playerTakeDamage(amt) {
 
 // Contact damage bypasses invincibility — continuous bleed when touching enemies
 function playerTakeContactDamage(dps, dt) {
+    if (player.isDashing) return;
     const dmg = Math.max(0, dps - player.stats.armor * 0.4) * dt;
     if (dmg <= 0) return;
     player.hp -= dmg;
     if (player.hp <= 0) { player.hp = 0; setGameState(STATE.GAME_OVER); }
 }
 function playerHeal(amt) { player.hp = Math.min(player.maxHp, player.hp + amt); }
+
+function getComboXPMultiplier() {
+    if (comboCount >= 10) return 3;
+    if (comboCount >= 5) return 2;
+    if (comboCount >= 3) return 1.5;
+    return 1;
+}
+
 function playerGainXP(v) {
-    player.xp += v;
+    const mult = getComboXPMultiplier();
+    player.xp += v * mult;
     while (player.xp >= player.xpToNext) {
         player.xp -= player.xpToNext;
         player.level++;
@@ -273,7 +380,53 @@ function playerGainXP(v) {
     }
 }
 
+function performDash() {
+    if (player.dashTimer > 0) return;
+    // Determine facing direction
+    let dx = 0, dy = 0;
+    if (keys['w'] || keys['arrowup']) dy -= 1;
+    if (keys['s'] || keys['arrowdown']) dy += 1;
+    if (keys['a'] || keys['arrowleft']) dx -= 1;
+    if (keys['d'] || keys['arrowright']) dx += 1;
+    // If no keys, dash toward mouse or facing direction
+    if (dx === 0 && dy === 0) {
+        const mdx = mouse.x - player.x, mdy = mouse.y - player.y;
+        if (Math.sqrt(mdx * mdx + mdy * mdy) > 8) {
+            const mn = norm(mdx, mdy);
+            dx = mn.x; dy = mn.y;
+        } else {
+            dx = player.facing; dy = 0;
+        }
+    }
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len > 0) { dx /= len; dy /= len; }
+
+    // Store pre-dash position for afterimage
+    dashAfterimages.push({ x: player.x, y: player.y, t: 0.3 });
+
+    // Move 120px in direction
+    player.x += dx * 120;
+    player.y += dy * 120;
+    player.x = clamp(player.x, player.radius, W - player.radius);
+    player.y = clamp(player.y, player.radius, H - player.radius);
+    pushOutRect(player, player.radius);
+
+    // Add mid-point afterimage
+    dashAfterimages.push({ x: (dashAfterimages[dashAfterimages.length - 1].x + player.x) / 2, y: (dashAfterimages[dashAfterimages.length - 1].y + player.y) / 2, t: 0.25 });
+
+    player.dashTimer = player.dashCooldown;
+    player.isDashing = true;
+    // isDashing lasts only one frame (set false in update)
+    sfxDash();
+}
+
 function updatePlayer(dt) {
+    // End dash invincibility after one frame
+    player.isDashing = false;
+
+    // Dash cooldown
+    if (player.dashTimer > 0) player.dashTimer -= dt;
+
     let dx = 0, dy = 0;
     if (keys['w'] || keys['arrowup']) dy -= 1;
     if (keys['s'] || keys['arrowdown']) dy += 1;
@@ -328,6 +481,18 @@ function updatePlayer(dt) {
             addFloating(m.x, m.y, `+$${total}`, '#fd0');
             matDrops.splice(i, 1);
         }
+    }
+
+    // Update combo timer
+    if (comboTimer > 0) {
+        comboTimer -= dt;
+        if (comboTimer <= 0) { comboCount = 0; comboTimer = 0; }
+    }
+
+    // Update dash afterimages
+    for (let i = dashAfterimages.length - 1; i >= 0; i--) {
+        dashAfterimages[i].t -= dt;
+        if (dashAfterimages[i].t <= 0) dashAfterimages.splice(i, 1);
     }
 
     // Auto-fire weapons
@@ -410,22 +575,21 @@ function fireWeapon(w, target) {
 }
 
 // ============================================================
-// ENEMIES
+// 8. ENEMIES (all types, AI, contact damage)
 // ============================================================
 let enemies = [];
 
 const ENEMY_DEFS = {
-    //                                                                              HP    spd  dmg contactDps  xp  mat
-    intern:    { name: 'Intern',        emoji: '🧑‍💼', color: '#5577cc', radius: 16, hp: 55,  spd: 88,  dmg: 10, contactDps: 16,  xp: 3, mat: 1, ai: 'chase' },
-    manager:   { name: 'Mgr',          emoji: '😤',   color: '#cc6633', radius: 18, hp: 95,  spd: 105, dmg: 18, contactDps: 28,  xp: 5, mat: 2, ai: 'chase' },
-    printer:   { name: 'Printer',      emoji: '🖨️',  color: '#667744', radius: 22, hp: 160, spd: 32,  dmg: 14, contactDps: 10,  xp: 7, mat: 3, ai: 'ranged' },
-    hrrep:     { name: 'HR Rep',       emoji: '📋',   color: '#bb44bb', radius: 15, hp: 68,  spd: 132, dmg: 24, contactDps: 36,  xp: 6, mat: 2, ai: 'chase' },
-    itguy:     { name: 'IT Guy',       emoji: '💻',   color: '#44aa77', radius: 17, hp: 85,  spd: 72,  dmg: 12, contactDps: 20,  xp: 6, mat: 3, ai: 'spawner' },
-    accountant:{ name: 'Accountant',   emoji: '🧮',   color: '#228833', radius: 20, hp: 140, spd: 50,  dmg: 10, contactDps: 12,  xp: 7, mat: 4, ai: 'ranged2' },
-    cfo:       { name: 'THE CFO',      emoji: '💰',   color: '#ccaa00', radius: 42, hp: 900, spd: 68,  dmg: 38, contactDps: 45,  xp: 60, mat: 25, ai: 'boss1', isBoss: true },
-    hrdirector:{ name: 'HR DIRECTOR',  emoji: '📎',   color: '#cc44cc', radius: 44, hp: 1400,spd: 62,  dmg: 32, contactDps: 40,  xp: 80, mat: 30, ai: 'boss2', isBoss: true },
-    cto:       { name: 'THE CTO',      emoji: '⌨️',  color: '#2244cc', radius: 46, hp: 2000,spd: 72,  dmg: 30, contactDps: 45,  xp: 100,mat: 35, ai: 'boss3', isBoss: true },
-    ceo:       { name: '👑 THE CEO 👑',emoji: '👑',   color: '#ff4400', radius: 52, hp: 3500,spd: 75,  dmg: 40, contactDps: 60,  xp: 150,mat: 50, ai: 'boss4', isBoss: true },
+    intern:    { name: 'Intern',        emoji: '\u{1F9D1}\u200D\u{1F4BC}', color: '#5577cc', radius: 16, hp: 55,  spd: 88,  dmg: 10, contactDps: 16,  xp: 3, mat: 1, ai: 'chase' },
+    manager:   { name: 'Mgr',          emoji: '\u{1F624}',   color: '#cc6633', radius: 18, hp: 95,  spd: 105, dmg: 18, contactDps: 28,  xp: 5, mat: 2, ai: 'chase' },
+    printer:   { name: 'Printer',      emoji: '\u{1F5A8}\uFE0F',  color: '#667744', radius: 22, hp: 160, spd: 32,  dmg: 14, contactDps: 10,  xp: 7, mat: 3, ai: 'ranged' },
+    hrrep:     { name: 'HR Rep',       emoji: '\u{1F4CB}',   color: '#bb44bb', radius: 15, hp: 68,  spd: 132, dmg: 24, contactDps: 36,  xp: 6, mat: 2, ai: 'chase' },
+    itguy:     { name: 'IT Guy',       emoji: '\u{1F4BB}',   color: '#44aa77', radius: 17, hp: 85,  spd: 72,  dmg: 12, contactDps: 20,  xp: 6, mat: 3, ai: 'spawner' },
+    accountant:{ name: 'Accountant',   emoji: '\u{1F9EE}',   color: '#228833', radius: 20, hp: 140, spd: 50,  dmg: 10, contactDps: 12,  xp: 7, mat: 4, ai: 'ranged2' },
+    cfo:       { name: 'THE CFO',      emoji: '\u{1F4B0}',   color: '#ccaa00', radius: 42, hp: 900, spd: 68,  dmg: 38, contactDps: 45,  xp: 60, mat: 25, ai: 'boss1', isBoss: true },
+    hrdirector:{ name: 'HR DIRECTOR',  emoji: '\u{1F4CE}',   color: '#cc44cc', radius: 44, hp: 1400,spd: 62,  dmg: 32, contactDps: 40,  xp: 80, mat: 30, ai: 'boss2', isBoss: true },
+    cto:       { name: 'THE CTO',      emoji: '\u2328\uFE0F',  color: '#2244cc', radius: 46, hp: 2000,spd: 72,  dmg: 30, contactDps: 45,  xp: 100,mat: 35, ai: 'boss3', isBoss: true },
+    ceo:       { name: '\u{1F451} THE CEO \u{1F451}',emoji: '\u{1F451}',   color: '#ff4400', radius: 52, hp: 3500,spd: 75,  dmg: 40, contactDps: 60,  xp: 150,mat: 50, ai: 'boss4', isBoss: true },
 };
 
 function spawnEnemy(type, x, y) {
@@ -437,8 +601,8 @@ function spawnEnemy(type, x, y) {
         else { x = -25; y = rand(0, H); }
     }
     const def = ENEMY_DEFS[type];
-    const scale    = 1 + (wave - 1) * 0.20;   // HP & dmg: +20% per wave
-    const spdScale = 1 + (wave - 1) * 0.07;   // speed: +7% per wave
+    const scale    = 1 + (wave - 1) * 0.20;
+    const spdScale = 1 + (wave - 1) * 0.07;
     return {
         ...def, x, y,
         maxHp: Math.floor(def.hp * scale),
@@ -462,6 +626,7 @@ function enemyTakeDamage(e, dmg) {
     if (e.dead) return;
     e.hp -= dmg;
     e.flashT = 0.12;
+    stats.damageDealt += dmg;
     addFloating(e.x + rand(-8, 8), e.y - e.radius - 4, Math.floor(dmg).toString(), '#fff');
     if (player.stats.lifesteal > 0) playerHeal(dmg * player.stats.lifesteal);
     if (e.hp <= 0) enemyDie(e);
@@ -469,6 +634,12 @@ function enemyTakeDamage(e, dmg) {
 
 function enemyDie(e) {
     e.dead = true;
+    stats.kills++;
+    // Combo system
+    comboCount++;
+    comboTimer = 2.0;
+    if (comboCount > stats.highestCombo) stats.highestCombo = comboCount;
+
     xpOrbs.push({ x: e.x, y: e.y, v: e.xp });
     if (Math.random() < 0.65 + player.stats.luck * 0.08) matDrops.push({ x: e.x, y: e.y, v: e.mat });
     for (let i = 0; i < 6; i++) particles.push({ type: 'death', x: e.x + rand(-12, 12), y: e.y + rand(-12, 12), vx: rand(-130, 130), vy: rand(-130, 130), r: rand(3, 7), color: e.color, t: rand(0.3, 0.7) });
@@ -517,7 +688,6 @@ function updateEnemyAI(e, dt) {
         if (e.aiTimer <= 0 && d < 380) {
             e.aiTimer = Math.max(0.9, 2.2 - wave * 0.06);
             const n = norm(dx, dy);
-            // Printer fires a 3-shot spread
             for (let k = -1; k <= 1; k++) {
                 const angle = Math.atan2(n.y, n.x) + k * 0.18;
                 enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(angle) * 230, vy: Math.sin(angle) * 230, dmg: e.dmg * 1.6, radius: 8, color: '#ddf', ttl: 2.2, dead: false });
@@ -544,14 +714,13 @@ function updateEnemyAI(e, dt) {
             enemies.push(spawnEnemy('intern', e.x + Math.cos(angle) * 30, e.y + Math.sin(angle) * 30));
         }
     }
-    else if (e.ai === 'boss1') { // CFO: summon + radial burst
+    else if (e.ai === 'boss1') { // CFO
         e.x += (dx / d) * spd * dt; e.y += (dy / d) * spd * dt;
         e.aiTimer -= dt;
         if (e.aiTimer <= 0) {
             e.aiTimer = 8;
             enemies.push(spawnEnemy('accountant')); enemies.push(spawnEnemy('accountant'));
             enemies.push(spawnEnemy('intern'));      enemies.push(spawnEnemy('intern'));
-            // Money shot — radial burst
             for (let k = 0; k < 6; k++) {
                 const a = (k / 6) * Math.PI * 2;
                 enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200, dmg: e.dmg * 0.7, radius: 9, color: '#fd0', ttl: 2, dead: false });
@@ -559,40 +728,36 @@ function updateEnemyAI(e, dt) {
             addFloating(e.x, e.y - 60, 'QUARTERLY REVIEW!', '#fd0');
         }
     }
-    else if (e.ai === 'boss2') { // HR Director: heal aura + shotgun + summon
+    else if (e.ai === 'boss2') { // HR Director
         e.x += (dx / d) * spd * dt; e.y += (dy / d) * spd * dt;
         e.aiTimer -= dt;
         if (e.aiTimer <= 0) {
             e.aiTimer = 1.6;
-            // Heal nearby enemies
             for (const other of enemies) {
                 if (other !== e && dist(e, other) < 180) other.hp = Math.min(other.maxHp, other.hp + 15);
             }
             if (d < 360) {
                 const n = norm(dx, dy);
-                // Triple shot
                 for (let k = -1; k <= 1; k++) {
                     const angle = Math.atan2(n.y, n.x) + k * 0.28;
                     enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(angle) * 160, vy: Math.sin(angle) * 160, dmg: e.dmg * 1.4, radius: 12, color: '#f8a', ttl: 2.8, dead: false });
                 }
             }
-            // Periodic summon
             if (!e._summonTimer) e._summonTimer = 0;
             e._summonTimer -= 1.6;
             if (e._summonTimer <= 0) { e._summonTimer = 12; enemies.push(spawnEnemy('hrrep')); enemies.push(spawnEnemy('manager')); }
         }
     }
-    else if (e.ai === 'boss3') { // CTO: phase2 speed boost, spawn IT guys, homing
+    else if (e.ai === 'boss3') { // CTO
         e.x += (dx / d) * spd * dt; e.y += (dy / d) * spd * dt;
         if (e.hp < e.maxHp * 0.5 && e.phase === 1) {
             e.phase = 2; e.spd *= 1.6;
-            addFloating(e.x, e.y - 70, '☠ PHASE 2 ☠', '#f00');
+            addFloating(e.x, e.y - 70, '\u2620 PHASE 2 \u2620', '#f00');
         }
         e.aiTimer -= dt;
         if (e.aiTimer <= 0) {
             e.aiTimer = e.phase === 2 ? 4 : 7;
             enemies.push(spawnEnemy('itguy'));
-            // Radial burst in phase 2
             if (e.phase === 2) {
                 for (let k = 0; k < 8; k++) {
                     const a = (k / 8) * Math.PI * 2;
@@ -601,11 +766,11 @@ function updateEnemyAI(e, dt) {
             }
         }
     }
-    else if (e.ai === 'boss4') { // CEO: all abilities
+    else if (e.ai === 'boss4') { // CEO
         e.x += (dx / d) * spd * dt; e.y += (dy / d) * spd * dt;
         if (e.hp < e.maxHp * 0.3 && e.phase === 1) {
             e.phase = 2; e.spd *= 1.4;
-            addFloating(e.x, e.y - 80, '⚡ SYNERGY! ⚡', '#f80');
+            addFloating(e.x, e.y - 80, '\u26A1 SYNERGY! \u26A1', '#f80');
             for (let k = 0; k < 4; k++) enemies.push(spawnEnemy(['intern','manager','hrrep','accountant'][k]));
         }
         e.aiTimer -= dt;
@@ -620,7 +785,7 @@ function updateEnemyAI(e, dt) {
 }
 
 // ============================================================
-// PROJECTILES
+// 9. PROJECTILES
 // ============================================================
 let bullets = [];
 let enemyBullets = [];
@@ -663,7 +828,6 @@ function updateBullets(dt) {
         }
         if (!b.dead && dist(b, player) < b.radius + player.radius) {
             playerTakeDamage(b.dmg);
-            if (b.slow) { /* slow player? skip for now */ }
             b.dead = true;
         }
         if (b.dead) enemyBullets.splice(i, 1);
@@ -677,7 +841,7 @@ function explodeBullet(b) {
 }
 
 // ============================================================
-// WAVE SYSTEM
+// 10. WAVE SYSTEM
 // ============================================================
 let spawnQueue = [];
 let spawnTimer = 0;
@@ -714,16 +878,18 @@ function startWave() {
     bullets = [];
     enemyBullets = [];
     gameState = STATE.PLAYING;
+    // Wave announcement
+    waveAnnounceTimer = 2.0;
 }
 
 // ============================================================
-// DROPS
+// 11. DROPS
 // ============================================================
 let xpOrbs = [];
 let matDrops = [];
 
 // ============================================================
-// PARTICLES & FLOATERS
+// 12. PARTICLES & FLOATERS
 // ============================================================
 let particles = [];
 let floaters = [];
@@ -751,30 +917,29 @@ function updateParticles(dt) {
         if (screenShake.t <= 0) { screenShake.x = 0; screenShake.y = 0; }
     }
 }
-screenShake.mag = 0;
 
 // ============================================================
-// UPGRADES / SHOP
+// 13. UPGRADES / SHOP
 // ============================================================
 const UPGRADE_POOL = [
-    { id: 'hp_up',       name: 'Protein Shake',       emoji: '🥤',  desc: '+30 Max HP, heal 30 HP',       cost: 4, cat: 'stat', apply: p => { p.maxHp += 30; p.hp = Math.min(p.maxHp, p.hp + 30); } },
-    { id: 'speed_up',    name: 'Espresso Shot',        emoji: '☕',  desc: '+20% movement speed',           cost: 3, cat: 'stat', apply: p => { p.stats.speed *= 1.2; } },
-    { id: 'dmg_up',      name: 'Anger Management',     emoji: '😤',  desc: '+25% all damage',               cost: 5, cat: 'stat', apply: p => { p.stats.damage *= 1.25; } },
-    { id: 'atkspd_up',   name: 'Too Much Coffee',      emoji: '⚡',  desc: '+25% attack speed',             cost: 4, cat: 'stat', apply: p => { p.stats.atkSpd *= 1.25; } },
-    { id: 'range_up',    name: 'Bigger Monitor',       emoji: '🖥️', desc: '+20% weapon range',             cost: 3, cat: 'stat', apply: p => { p.stats.range *= 1.2; } },
-    { id: 'armor_up',    name: 'Bubble Wrap Vest',     emoji: '🛡️', desc: '+6 armor (flat reduction)',     cost: 4, cat: 'stat', apply: p => { p.stats.armor += 6; } },
-    { id: 'luck_up',     name: 'Office Lottery',       emoji: '🎰',  desc: '+1.5 luck (more drops)',        cost: 2, cat: 'stat', apply: p => { p.stats.luck += 1.5; } },
-    { id: 'lifesteal_up',name: 'Vampire Energy Drink', emoji: '🧛',  desc: '+6% lifesteal from attacks',    cost: 5, cat: 'stat', apply: p => { p.stats.lifesteal += 0.06; } },
-    { id: 'regen_up',    name: 'Desk Snacks',          emoji: '🍪',  desc: 'Regen 3 HP/sec',                cost: 5, cat: 'stat', apply: p => { p.stats.regen += 3; } },
-    { id: 'heal',        name: 'First Aid Kit',        emoji: '🩹',  desc: 'Restore 50 HP right now',      cost: 2, cat: 'stat', apply: p => { playerHeal(50); } },
-    // New weapons (shown only if not owned and <6 slots)
-    { id: 'w_rubberband',name: 'Rubber Band',          emoji: '🔗',  desc: 'New: Rapid-fire rubber bands',  cost: 5, cat: 'weapon', weaponId: 'rubberband', apply: p => { p.weapons.push({ ...WEAPONS.rubberband, level: 1 }); } },
-    { id: 'w_coffeemug', name: 'Coffee Mug',           emoji: '☕',  desc: 'New: AOE thrown coffee mug',    cost: 6, cat: 'weapon', weaponId: 'coffeemug',  apply: p => { p.weapons.push({ ...WEAPONS.coffeemug, level: 1 }); } },
-    { id: 'w_keyboard',  name: 'Keyboard',             emoji: '⌨️', desc: 'New: Melee keyboard smash',     cost: 5, cat: 'weapon', weaponId: 'keyboard',   apply: p => { p.weapons.push({ ...WEAPONS.keyboard, level: 1 }); } },
-    { id: 'w_usb',       name: 'USB Drive',            emoji: '💾',  desc: 'New: Orbiting USB weapon',      cost: 5, cat: 'weapon', weaponId: 'usb',        apply: p => { p.weapons.push({ ...WEAPONS.usb, level: 1 }); } },
-    { id: 'w_laser',     name: 'Laser Pointer',        emoji: '🔴',  desc: 'New: Piercing laser shots',     cost: 6, cat: 'weapon', weaponId: 'laser',      apply: p => { p.weapons.push({ ...WEAPONS.laser, level: 1 }); } },
-    { id: 'w_sticky',    name: 'Sticky Note',          emoji: '📝',  desc: 'New: Slow + poison notes',      cost: 5, cat: 'weapon', weaponId: 'sticky',     apply: p => { p.weapons.push({ ...WEAPONS.sticky, level: 1 }); } },
-    { id: 'w_tps',       name: 'TPS Report',           emoji: '📄',  desc: 'New: Massive AOE slam',         cost: 8, cat: 'weapon', weaponId: 'tpsreport',  apply: p => { p.weapons.push({ ...WEAPONS.tpsreport, level: 1 }); } },
+    { id: 'hp_up',       name: 'Protein Shake',       emoji: '\u{1F964}',  desc: '+30 Max HP, heal 30 HP',       cost: 4, cat: 'stat', apply: p => { p.maxHp += 30; p.hp = Math.min(p.maxHp, p.hp + 30); } },
+    { id: 'speed_up',    name: 'Espresso Shot',        emoji: '\u2615',  desc: '+20% movement speed',           cost: 3, cat: 'stat', apply: p => { p.stats.speed *= 1.2; } },
+    { id: 'dmg_up',      name: 'Anger Management',     emoji: '\u{1F624}',  desc: '+25% all damage',               cost: 5, cat: 'stat', apply: p => { p.stats.damage *= 1.25; } },
+    { id: 'atkspd_up',   name: 'Too Much Coffee',      emoji: '\u26A1',  desc: '+25% attack speed',             cost: 4, cat: 'stat', apply: p => { p.stats.atkSpd *= 1.25; } },
+    { id: 'range_up',    name: 'Bigger Monitor',       emoji: '\u{1F5A5}\uFE0F', desc: '+20% weapon range',             cost: 3, cat: 'stat', apply: p => { p.stats.range *= 1.2; } },
+    { id: 'armor_up',    name: 'Bubble Wrap Vest',     emoji: '\u{1F6E1}\uFE0F', desc: '+6 armor (flat reduction)',     cost: 4, cat: 'stat', apply: p => { p.stats.armor += 6; } },
+    { id: 'luck_up',     name: 'Office Lottery',       emoji: '\u{1F3B0}',  desc: '+1.5 luck (more drops)',        cost: 2, cat: 'stat', apply: p => { p.stats.luck += 1.5; } },
+    { id: 'lifesteal_up',name: 'Vampire Energy Drink', emoji: '\u{1F9DB}',  desc: '+6% lifesteal from attacks',    cost: 5, cat: 'stat', apply: p => { p.stats.lifesteal += 0.06; } },
+    { id: 'regen_up',    name: 'Desk Snacks',          emoji: '\u{1F36A}',  desc: 'Regen 3 HP/sec',                cost: 5, cat: 'stat', apply: p => { p.stats.regen += 3; } },
+    { id: 'heal',        name: 'First Aid Kit',        emoji: '\u{1FA79}',  desc: 'Restore 50 HP right now',      cost: 2, cat: 'stat', apply: p => { playerHeal(50); } },
+    // New weapons
+    { id: 'w_rubberband',name: 'Rubber Band',          emoji: '\u{1F517}',  desc: 'New: Rapid-fire rubber bands',  cost: 5, cat: 'weapon', weaponId: 'rubberband', apply: p => { p.weapons.push({ ...WEAPONS.rubberband, level: 1 }); } },
+    { id: 'w_coffeemug', name: 'Coffee Mug',           emoji: '\u2615',  desc: 'New: AOE thrown coffee mug',    cost: 6, cat: 'weapon', weaponId: 'coffeemug',  apply: p => { p.weapons.push({ ...WEAPONS.coffeemug, level: 1 }); } },
+    { id: 'w_keyboard',  name: 'Keyboard',             emoji: '\u2328\uFE0F', desc: 'New: Melee keyboard smash',     cost: 5, cat: 'weapon', weaponId: 'keyboard',   apply: p => { p.weapons.push({ ...WEAPONS.keyboard, level: 1 }); } },
+    { id: 'w_usb',       name: 'USB Drive',            emoji: '\u{1F4BE}',  desc: 'New: Orbiting USB weapon',      cost: 5, cat: 'weapon', weaponId: 'usb',        apply: p => { p.weapons.push({ ...WEAPONS.usb, level: 1 }); } },
+    { id: 'w_laser',     name: 'Laser Pointer',        emoji: '\u{1F534}',  desc: 'New: Piercing laser shots',     cost: 6, cat: 'weapon', weaponId: 'laser',      apply: p => { p.weapons.push({ ...WEAPONS.laser, level: 1 }); } },
+    { id: 'w_sticky',    name: 'Sticky Note',          emoji: '\u{1F4DD}',  desc: 'New: Slow + poison notes',      cost: 5, cat: 'weapon', weaponId: 'sticky',     apply: p => { p.weapons.push({ ...WEAPONS.sticky, level: 1 }); } },
+    { id: 'w_tps',       name: 'TPS Report',           emoji: '\u{1F4C4}',  desc: 'New: Massive AOE slam',         cost: 8, cat: 'weapon', weaponId: 'tpsreport',  apply: p => { p.weapons.push({ ...WEAPONS.tpsreport, level: 1 }); } },
 ];
 
 let shopOptions = [];
@@ -821,7 +986,6 @@ function buyUpgrade(idx) {
     addFloating(W / 2, H / 2 - 30, upg.name + '!', '#fd0');
     sfxBuy();
     shopOptions.splice(idx, 1);
-    // Fill back up to 4 options if possible
     const extras = generateShopOptions(4 - shopOptions.length);
     shopOptions.push(...extras);
     hoveredCard = -1;
@@ -831,7 +995,7 @@ function rerollShop() {
     if (player.materials < rerollCost) return;
     player.materials -= rerollCost;
     rerollCount++;
-    rerollCost = 2 + rerollCount * 2; // 2, 4, 6, 8...
+    rerollCost = 2 + rerollCount * 2;
     shopOptions = generateShopOptions(4);
     hoveredCard = -1;
     sfxReroll();
@@ -845,7 +1009,7 @@ function beginNextWave() {
 }
 
 // ============================================================
-// STATE TRANSITIONS
+// 14. STATE TRANSITIONS
 // ============================================================
 function setGameState(s) {
     gameState = s;
@@ -858,6 +1022,9 @@ function setGameState(s) {
     }
     if (s === STATE.WAVE_END) {
         waveTransitionTimer = 1.8;
+        magnetActive = true;
+        magnetTimer = 1.0;
+        stats.wavesCompleted = wave;
         sfxWaveComplete();
     }
     if (s === STATE.PLAYING && wave % 5 === 0) {
@@ -865,9 +1032,14 @@ function setGameState(s) {
     }
 }
 
-function startNewGame() {
-    player = createPlayer();
+function startNewGame(charId) {
+    player = createPlayer(charId || 'developer');
     enemies = []; bullets = []; enemyBullets = []; xpOrbs = []; matDrops = []; particles = []; floaters = [];
+    dashAfterimages = [];
+    comboCount = 0; comboTimer = 0;
+    waveAnnounceTimer = 0;
+    magnetActive = false; magnetTimer = 0;
+    resetStats();
     wave = 1;
     setGameState(STATE.PLAYING);
     startWave();
@@ -875,7 +1047,7 @@ function startNewGame() {
 }
 
 // ============================================================
-// UPDATE
+// 15. UPDATE LOOP (with dash, combo, wave announce, magnet)
 // ============================================================
 function update(dt) {
     updateParticles(dt);
@@ -891,6 +1063,9 @@ function update(dt) {
         updateEnemies(dt);
         updateBullets(dt);
 
+        // Wave announcement timer
+        if (waveAnnounceTimer > 0) waveAnnounceTimer -= dt;
+
         // Wave done when queue empty + all enemies dead
         if (spawnQueue.length === 0 && enemies.length === 0) {
             if (wave >= MAX_WAVES) setGameState(STATE.VICTORY);
@@ -899,12 +1074,42 @@ function update(dt) {
     }
     else if (gameState === STATE.WAVE_END) {
         waveTransitionTimer -= dt;
+
+        // End-of-wave magnet: pull all drops toward player
+        if (magnetActive) {
+            magnetTimer -= dt;
+            const magnetSpeed = 600;
+            for (const o of xpOrbs) {
+                const n = norm(player.x - o.x, player.y - o.y);
+                o.x += n.x * magnetSpeed * dt;
+                o.y += n.y * magnetSpeed * dt;
+            }
+            for (const m of matDrops) {
+                const n = norm(player.x - m.x, player.y - m.y);
+                m.x += n.x * magnetSpeed * dt;
+                m.y += n.y * magnetSpeed * dt;
+            }
+            // Collect orbs/materials that reach player
+            for (let i = xpOrbs.length - 1; i >= 0; i--) {
+                if (dist(player, xpOrbs[i]) < 50) { playerGainXP(xpOrbs[i].v); xpOrbs.splice(i, 1); }
+            }
+            for (let i = matDrops.length - 1; i >= 0; i--) {
+                if (dist(player, matDrops[i]) < 50) {
+                    const total = matDrops[i].v + Math.floor(player.stats.luck);
+                    player.materials += total;
+                    addFloating(matDrops[i].x, matDrops[i].y, `+$${total}`, '#fd0');
+                    matDrops.splice(i, 1);
+                }
+            }
+            if (magnetTimer <= 0) magnetActive = false;
+        }
+
         if (waveTransitionTimer <= 0) setGameState(STATE.SHOP);
     }
 }
 
 // ============================================================
-// RENDER
+// 16. RENDER
 // ============================================================
 function render() {
     ctx.save();
@@ -913,17 +1118,25 @@ function render() {
     ctx.clearRect(-10, -10, W + 20, H + 20);
 
     if (gameState === STATE.MENU) renderMenu();
+    else if (gameState === STATE.CHAR_SELECT) renderCharSelect();
     else {
         renderArena();
         if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END) {
             renderPickupsAndParticles();
             renderBullets();
             renderEnemies();
+            renderDashAfterimages();
             renderPlayer();
             renderOrbitalWeapons();
             renderFloaters();
+            // Danger vignette (before HUD)
+            renderDangerVignette();
             renderHUD();
+            renderComboDisplay();
+            renderDashCooldown();
             if (wave % 5 === 0 && enemies.find(e => e.isBoss)) renderBossBar();
+            // Wave announcement overlay
+            renderWaveAnnouncement();
         }
         if (gameState === STATE.WAVE_END) renderWaveEnd();
         if (gameState === STATE.SHOP) renderShop();
@@ -932,6 +1145,9 @@ function render() {
     }
 
     ctx.restore();
+
+    // Fullscreen button (rendered outside shake transform, in logical coords)
+    renderFullscreenButton();
 }
 
 function renderArena() {
@@ -948,13 +1164,12 @@ function renderArena() {
         ctx.strokeStyle = '#5a4428';
         ctx.lineWidth = 2;
         ctx.strokeRect(o.x, o.y, o.w, o.h);
-        // Desk accent
         ctx.fillStyle = '#3a2820';
         ctx.fillRect(o.x + 4, o.y + 4, o.w - 8, 8);
         ctx.font = '18px serif';
         ctx.textAlign = 'center';
         ctx.fillStyle = '#fff';
-        ctx.fillText('🖥️', o.x + o.w / 2, o.y + o.h / 2 + 7);
+        ctx.fillText('\u{1F5A5}\uFE0F', o.x + o.w / 2, o.y + o.h / 2 + 7);
     }
 }
 
@@ -968,7 +1183,7 @@ function renderPickupsAndParticles() {
     }
     for (const m of matDrops) {
         ctx.font = '16px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('💰', m.x, m.y);
+        ctx.fillText('\u{1F4B0}', m.x, m.y);
     }
     for (const p of particles) {
         if (p.type === 'aoe') {
@@ -982,7 +1197,6 @@ function renderPickupsAndParticles() {
             ctx.save(); ctx.globalAlpha = (p.t / 0.22) * 0.4; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
             ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
         }
-        if (p.t > 0 && p.type === 'melee') p.t -= 0; // handled in updateParticles
     }
 }
 
@@ -993,13 +1207,13 @@ function renderBullets() {
         ctx.shadowColor = b.weapon.color; ctx.shadowBlur = 6;
         if (b.weapon.id === 'coffeemug') {
             ctx.font = '16px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('☕', b.x, b.y);
+            ctx.fillText('\u2615', b.x, b.y);
         } else if (b.weapon.id === 'tpsreport') {
             ctx.font = '14px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('📄', b.x, b.y);
+            ctx.fillText('\u{1F4C4}', b.x, b.y);
         } else if (b.weapon.id === 'sticky') {
             ctx.font = '13px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('📝', b.x, b.y);
+            ctx.fillText('\u{1F4DD}', b.x, b.y);
         } else {
             ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2); ctx.fill();
         }
@@ -1035,6 +1249,17 @@ function renderEnemies() {
     }
 }
 
+function renderDashAfterimages() {
+    for (const ai of dashAfterimages) {
+        const alpha = ai.t / 0.3;
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.4;
+        ctx.fillStyle = '#4488ff';
+        ctx.beginPath(); ctx.arc(ai.x, ai.y, player.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+}
+
 function renderPlayer() {
     ctx.save();
     if (player.invTimer > 0 && Math.floor(player.invTimer * 12) % 2 === 0) ctx.globalAlpha = 0.25;
@@ -1042,7 +1267,7 @@ function renderPlayer() {
     ctx.beginPath(); ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2); ctx.fill();
     ctx.font = `${player.radius * 1.5}px serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('🧑‍💻', player.x, player.y);
+    ctx.fillText(selectedChar ? selectedChar.emoji : '\u{1F9D1}\u200D\u{1F4BB}', player.x, player.y);
     ctx.restore();
 }
 
@@ -1069,6 +1294,93 @@ function renderFloaters() {
     }
 }
 
+// Danger vignette: red pulsing overlay when HP < 30%
+function renderDangerVignette() {
+    if (!player || player.hp / player.maxHp >= 0.3) return;
+    // Heartbeat rhythm at ~1.2 Hz
+    const heartbeat = Math.sin(Date.now() * 0.00754) * 0.5 + 0.5; // 0-1 pulsing
+    const intensity = (1 - player.hp / player.maxHp / 0.3) * 0.5; // stronger as HP drops
+    const alpha = intensity * (0.3 + heartbeat * 0.4);
+
+    ctx.save();
+    const grad = ctx.createRadialGradient(W / 2, H / 2, W * 0.25, W / 2, H / 2, W * 0.7);
+    grad.addColorStop(0, 'rgba(255, 0, 0, 0)');
+    grad.addColorStop(1, `rgba(255, 0, 0, ${alpha})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+}
+
+// Combo display
+function renderComboDisplay() {
+    if (comboCount < 3) return;
+    const scale = 1 + Math.sin(Date.now() * 0.008) * 0.1;
+    const mult = getComboXPMultiplier();
+    ctx.save();
+    ctx.font = `bold ${Math.floor(22 * scale)}px Courier New`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = comboCount >= 10 ? '#ff4400' : comboCount >= 5 ? '#ffaa00' : '#ffdd00';
+    ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12;
+    ctx.fillText(`x${comboCount} COMBO!`, player.x, player.y - 40);
+    ctx.font = '12px Courier New'; ctx.shadowBlur = 0;
+    ctx.fillStyle = '#aaf';
+    ctx.fillText(`${mult}x XP`, player.x, player.y - 55);
+    ctx.restore();
+}
+
+// Dash cooldown indicator
+function renderDashCooldown() {
+    if (!player) return;
+    const cdPct = player.dashTimer > 0 ? player.dashTimer / player.dashCooldown : 0;
+    const x = 215, y = 10, w = 40, h = 14;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(x, y, w, h);
+    if (cdPct > 0) {
+        ctx.fillStyle = '#555';
+        ctx.fillRect(x, y, w * cdPct, h);
+    } else {
+        ctx.fillStyle = '#44ddff';
+        ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeStyle = '#666'; ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = cdPct > 0 ? '#888' : '#fff';
+    ctx.font = '9px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('DASH', x + w / 2, y + 11);
+}
+
+// Wave announcement
+function renderWaveAnnouncement() {
+    if (waveAnnounceTimer <= 0) return;
+    const t = waveAnnounceTimer;
+    const progress = 1 - t / 2.0; // 0 to 1
+    const alpha = t > 1.5 ? (2.0 - t) * 2 : t / 1.5; // fade in then out
+    const scale = t > 1.5 ? 0.5 + (2.0 - t) * 1.0 : 1.0; // zoom in during first 0.5s
+
+    ctx.save();
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    const isBoss = wave % 5 === 0;
+    const fontSize = Math.floor(48 * scale);
+
+    if (isBoss) {
+        // Boss wave shake
+        const shakeX = Math.sin(Date.now() * 0.05) * 3;
+        const shakeY = Math.cos(Date.now() * 0.07) * 2;
+        ctx.font = `bold ${fontSize}px Courier New`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ff2200';
+        ctx.shadowColor = '#ff0000'; ctx.shadowBlur = 20;
+        ctx.fillText(`\u26A0 BOSS WAVE \u26A0`, W / 2 + shakeX, H / 2 - 60 + shakeY);
+    } else {
+        ctx.font = `bold ${fontSize}px Courier New`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#4488ff'; ctx.shadowBlur = 16;
+        ctx.fillText(`WAVE ${wave}`, W / 2, H / 2 - 60);
+    }
+    ctx.restore();
+}
+
 function renderHUD() {
     ctx.fillStyle = 'rgba(0,0,0,0.72)';
     ctx.fillRect(0, 0, W, 52);
@@ -1092,16 +1404,16 @@ function renderHUD() {
     const isBoss = wave % 5 === 0;
     ctx.fillStyle = isBoss ? '#ff4444' : '#eee';
     ctx.font = `bold ${isBoss ? 15 : 16}px Courier New`; ctx.textAlign = 'center';
-    ctx.fillText(isBoss ? `⚠ BOSS WAVE ${wave}/${MAX_WAVES} ⚠` : `WAVE ${wave} / ${MAX_WAVES}`, W / 2, 22);
+    ctx.fillText(isBoss ? `\u26A0 BOSS WAVE ${wave}/${MAX_WAVES} \u26A0` : `WAVE ${wave} / ${MAX_WAVES}`, W / 2, 22);
     const remaining = enemies.length + spawnQueue.length;
     ctx.fillStyle = '#f88'; ctx.font = '12px Courier New';
-    ctx.fillText(`👾 ${remaining} remaining`, W / 2, 40);
+    ctx.fillText(`\u{1F47E} ${remaining} remaining`, W / 2, 40);
 
     // Materials
     ctx.fillStyle = '#ffdd00'; ctx.font = '16px Courier New'; ctx.textAlign = 'right';
-    ctx.fillText(`💰 ${player.materials}`, W - 10, 22);
+    ctx.fillText(`\u{1F4B0} ${player.materials}`, W - 10, 22);
     ctx.fillStyle = '#8af'; ctx.font = '11px Courier New';
-    ctx.fillText(`❤ ${Math.ceil(player.hp)}  ⚡ Lv${player.level}`, W - 10, 40);
+    ctx.fillText(`\u2764 ${Math.ceil(player.hp)}  \u26A1 Lv${player.level}`, W - 10, 40);
 
     // Weapon bar
     renderWeaponBar();
@@ -1163,10 +1475,10 @@ function renderShop() {
     // Header
     ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Courier New'; ctx.textAlign = 'center';
     ctx.shadowColor = '#0af'; ctx.shadowBlur = 12;
-    ctx.fillText(`📋 WAVE ${wave} SHOP`, W / 2, 36);
+    ctx.fillText(`\u{1F4CB} WAVE ${wave} SHOP`, W / 2, 36);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffdd00'; ctx.font = '15px Courier New';
-    ctx.fillText(`💰 ${player.materials} materials  |  [1-4] buy  [R] reroll  [Enter] continue`, W / 2, 60);
+    ctx.fillText(`\u{1F4B0} ${player.materials} materials  |  [1-4] buy  [R] reroll  [Enter] continue`, W / 2, 60);
 
     // Cards
     const cw = 170, ch = 195, gap = 12;
@@ -1179,11 +1491,10 @@ function renderShop() {
         const hover = hoveredCard === i;
 
         if (!u) {
-            // Empty slot
             ctx.fillStyle = '#0a0a18'; ctx.strokeStyle = '#1a1a30'; ctx.lineWidth = 1;
             ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); ctx.stroke();
             ctx.fillStyle = '#333'; ctx.font = '28px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('✓', x + cw / 2, y + ch / 2);
+            ctx.fillText('\u2713', x + cw / 2, y + ch / 2);
             continue;
         }
 
@@ -1205,7 +1516,7 @@ function renderShop() {
         lines.slice(0, 4).forEach((l, li) => ctx.fillText(l, x + cw / 2, y + 86 + li * 14));
 
         ctx.fillStyle = canBuy ? '#ffdd00' : '#552200'; ctx.font = 'bold 13px Courier New';
-        ctx.fillText(`💰 ${u.cost}`, x + cw / 2, y + ch - 20);
+        ctx.fillText(`\u{1F4B0} ${u.cost}`, x + cw / 2, y + ch - 20);
         ctx.fillStyle = '#334'; ctx.font = '11px Courier New';
         ctx.fillText(`[${i + 1}]`, x + cw / 2, y + ch - 6);
     }
@@ -1221,20 +1532,20 @@ function renderShop() {
     ctx.beginPath(); ctx.roundRect(rrX, btnY, 180, 40, 6); ctx.fill(); ctx.stroke();
     ctx.fillStyle = canReroll ? '#66ffaa' : '#444';
     ctx.font = '13px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText(`🎲 Reroll [R]  💰${rerollCost}`, rrX + 90, btnY + 25);
+    ctx.fillText(`\u{1F3B2} Reroll [R]  \u{1F4B0}${rerollCost}`, rrX + 90, btnY + 25);
 
     // Continue button
     const contX = W - sx - 200;
     ctx.fillStyle = '#102820'; ctx.strokeStyle = '#226644'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.roundRect(contX, btnY, 200, 40, 6); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#44ff88'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
-    ctx.fillText('▶ Continue  [Enter]', contX + 100, btnY + 25);
+    ctx.fillText('\u25B6 Continue  [Enter]', contX + 100, btnY + 25);
 
     // Stats footer
     const statY = btnY + 58;
     ctx.fillStyle = '#445'; ctx.font = '11px Courier New'; ctx.textAlign = 'center';
     ctx.fillText(
-        `❤ ${Math.ceil(player.hp)}/${player.maxHp}  🏃 ${player.stats.speed.toFixed(2)}x  ⚔ ${player.stats.damage.toFixed(2)}x  ⚡ ${player.stats.atkSpd.toFixed(2)}x  🛡 ${player.stats.armor}  ♻ ${player.stats.regen}/s`,
+        `\u2764 ${Math.ceil(player.hp)}/${player.maxHp}  \u{1F3C3} ${player.stats.speed.toFixed(2)}x  \u2694 ${player.stats.damage.toFixed(2)}x  \u26A1 ${player.stats.atkSpd.toFixed(2)}x  \u{1F6E1} ${player.stats.armor}  \u267B ${player.stats.regen}/s`,
         W / 2, statY
     );
     ctx.fillStyle = '#336'; ctx.font = '11px Courier New';
@@ -1256,41 +1567,122 @@ function renderMenu() {
     ctx.font = '20px Courier New'; ctx.fillStyle = '#99aaff'; ctx.shadowBlur = 8;
     ctx.fillText('Survive 20 waves of corporate hell', W / 2, 208);
     ctx.shadowBlur = 0; ctx.fillStyle = '#556'; ctx.font = '15px Courier New';
-    ctx.fillText('WASD or hold 🖱 Left Mouse to move  •  Weapons auto-fire', W / 2, 244);
-    ctx.fillText('Collect 💰 between waves for upgrades  •  [M] mute music', W / 2, 266);
+    ctx.fillText('WASD or hold \u{1F5B1} Left Mouse to move  \u2022  Weapons auto-fire', W / 2, 244);
+    ctx.fillText('Collect \u{1F4B0} between waves for upgrades  \u2022  [M] mute music', W / 2, 266);
+    ctx.fillText('[Space] dash  \u2022  [F] fullscreen', W / 2, 288);
 
     // Play button
     const pulse = 0.85 + Math.sin(Date.now() * 0.003) * 0.15;
     ctx.fillStyle = `rgba(0, 170, 255, ${pulse})`;
     ctx.shadowColor = '#0af'; ctx.shadowBlur = 14;
-    ctx.beginPath(); ctx.roundRect(W / 2 - 115, 300, 230, 56, 12); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(W / 2 - 115, 320, 230, 56, 12); ctx.fill();
     ctx.fillStyle = '#000'; ctx.font = 'bold 22px Courier New'; ctx.shadowBlur = 0;
-    ctx.fillText('⏱ CLOCK IN', W / 2, 334);
+    ctx.fillText('\u23F1 CLOCK IN', W / 2, 354);
 
     // Enemy showcase
-    const showcase = ['🧑‍💼','😤','🖨️','📋','💻','🧮','💰','👑'];
+    const showcase = ['\u{1F9D1}\u200D\u{1F4BC}','\u{1F624}','\u{1F5A8}\uFE0F','\u{1F4CB}','\u{1F4BB}','\u{1F9EE}','\u{1F4B0}','\u{1F451}'];
     showcase.forEach((e, i) => {
         ctx.font = '28px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-        ctx.fillText(e, 70 + i * 95, 424);
+        ctx.fillText(e, 70 + i * 95, 434);
     });
     ctx.fillStyle = '#446'; ctx.font = '12px Courier New'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText('Intern  Manager  Printer  HR Rep  IT Guy  Accnt   CFO    CEO', W / 2, 446);
+    ctx.fillText('Intern  Manager  Printer  HR Rep  IT Guy  Accnt   CFO    CEO', W / 2, 456);
 
     // Controls
     ctx.fillStyle = '#334'; ctx.font = '13px Courier New';
-    ctx.fillText('Defeat all enemies each wave • Collect XP orbs (green) to level up', W / 2, 485);
-    ctx.fillText('Avoid touching enemies • Buy upgrades between waves', W / 2, 505);
+    ctx.fillText('Defeat all enemies each wave \u2022 Collect XP orbs (green) to level up', W / 2, 495);
+    ctx.fillText('Avoid touching enemies \u2022 Buy upgrades between waves', W / 2, 515);
+}
+
+// Character Select screen
+let hoveredCharIdx = -1;
+
+function renderCharSelect() {
+    ctx.fillStyle = '#0d0d1e'; ctx.fillRect(0, 0, W, H);
+    // Grid bg
+    ctx.strokeStyle = '#171730'; ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    // Title
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 32px Courier New'; ctx.textAlign = 'center';
+    ctx.shadowColor = '#4af'; ctx.shadowBlur = 14;
+    ctx.fillText('SELECT YOUR CHARACTER', W / 2, 48);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#667'; ctx.font = '13px Courier New';
+    ctx.fillText('Click or press [1-6] to choose', W / 2, 70);
+
+    // 2x3 grid of character cards
+    const cw = 230, ch = 160, gapX = 18, gapY = 14;
+    const cols = 3, rows = 2;
+    const totalW = cols * cw + (cols - 1) * gapX;
+    const totalH = rows * ch + (rows - 1) * gapY;
+    const startX = (W - totalW) / 2;
+    const startY = 88;
+
+    for (let idx = 0; idx < CHAR_ORDER.length; idx++) {
+        const ch_def = CHARACTERS[CHAR_ORDER[idx]];
+        const col = idx % cols, row = Math.floor(idx / cols);
+        const x = startX + col * (cw + gapX);
+        const y = startY + row * (ch + gapY);
+        const hover = hoveredCharIdx === idx;
+
+        // Card background
+        ctx.fillStyle = hover ? '#1a2255' : '#0f1530';
+        ctx.strokeStyle = hover ? '#66aaff' : '#334488';
+        ctx.lineWidth = hover ? 2 : 1;
+        ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); ctx.stroke();
+
+        // Emoji
+        ctx.font = '36px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText(ch_def.emoji, x + 36, y + 46);
+
+        // Name
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(ch_def.name, x + 68, y + 24);
+
+        // Description
+        ctx.fillStyle = '#88aadd'; ctx.font = '10px Courier New';
+        ctx.fillText(ch_def.desc, x + 68, y + 40);
+
+        // Stats
+        ctx.fillStyle = '#8899aa'; ctx.font = '9px Courier New';
+        ctx.fillText(`HP:${ch_def.hp} SPD:${ch_def.speed}x DMG:${ch_def.damage}x`, x + 10, y + 72);
+        ctx.fillText(`ATK:${ch_def.atkSpd}x RNG:${ch_def.range}x ARM:${ch_def.armor}`, x + 10, y + 86);
+        if (ch_def.lifesteal > 0) ctx.fillText(`LS:${(ch_def.lifesteal * 100).toFixed(0)}%`, x + 10, y + 100);
+        if (ch_def.luck > 0) ctx.fillText(`LCK:+${ch_def.luck}`, x + (ch_def.lifesteal > 0 ? 60 : 10), y + 100);
+
+        // Starting weapon
+        const sw = WEAPONS[ch_def.startWeapon];
+        ctx.fillStyle = '#aab'; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(`Weapon: ${sw.emoji} ${sw.name}`, x + 10, y + 118);
+
+        // Passive
+        ctx.fillStyle = '#dd8'; ctx.font = 'bold 10px Courier New';
+        ctx.fillText(`\u2605 ${ch_def.passive}`, x + 10, y + 136);
+        ctx.fillStyle = '#887'; ctx.font = '9px Courier New';
+        ctx.fillText(ch_def.passiveDesc, x + 10, y + 150);
+
+        // Number key hint
+        ctx.fillStyle = '#334'; ctx.font = '11px Courier New'; ctx.textAlign = 'right';
+        ctx.fillText(`[${idx + 1}]`, x + cw - 8, y + 150);
+    }
 }
 
 function renderGameOver() {
     ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = '#ff3333'; ctx.font = 'bold 60px Courier New'; ctx.textAlign = 'center';
     ctx.shadowColor = '#f00'; ctx.shadowBlur = 22;
-    ctx.fillText('TERMINATED', W / 2, 200);
+    ctx.fillText('TERMINATED', W / 2, 150);
     ctx.shadowBlur = 0; ctx.fillStyle = '#aaa'; ctx.font = '20px Courier New';
-    ctx.fillText('Your employment has been terminated.', W / 2, 255);
-    ctx.fillText(`You survived to Wave ${wave} / ${MAX_WAVES}`, W / 2, 290);
-    ctx.fillText(`Level reached: ${player.level}`, W / 2, 325);
+    ctx.fillText('Your employment has been terminated.', W / 2, 200);
+    ctx.fillText(`You survived to Wave ${wave} / ${MAX_WAVES}`, W / 2, 235);
+    ctx.fillText(`Level reached: ${player.level}`, W / 2, 265);
+
+    // Stats display
+    ctx.fillStyle = '#889'; ctx.font = '14px Courier New';
+    ctx.fillText(`Kills: ${stats.kills}   Damage Dealt: ${Math.floor(stats.damageDealt)}`, W / 2, 305);
+    ctx.fillText(`Highest Combo: ${stats.highestCombo}   Waves Completed: ${stats.wavesCompleted}`, W / 2, 330);
 
     ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
     ctx.beginPath(); ctx.roundRect(W / 2 - 120, 368, 240, 52, 10); ctx.fill();
@@ -1302,12 +1694,17 @@ function renderVictory() {
     ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = '#ffdd00'; ctx.font = 'bold 50px Courier New'; ctx.textAlign = 'center';
     ctx.shadowColor = '#fd0'; ctx.shadowBlur = 22;
-    ctx.fillText('YOU SURVIVED!', W / 2, 185);
+    ctx.fillText('YOU SURVIVED!', W / 2, 140);
     ctx.shadowBlur = 0; ctx.fillStyle = '#0f0'; ctx.font = '20px Courier New';
-    ctx.fillText('The company has filed for bankruptcy.', W / 2, 240);
-    ctx.fillText('You are free. 🎉', W / 2, 272);
+    ctx.fillText('The company has filed for bankruptcy.', W / 2, 190);
+    ctx.fillText('You are free. \u{1F389}', W / 2, 220);
     ctx.fillStyle = '#aaf'; ctx.font = '18px Courier New';
-    ctx.fillText(`Final Level: ${player.level}   Materials: ${player.materials}`, W / 2, 315);
+    ctx.fillText(`Final Level: ${player.level}   Materials: ${player.materials}`, W / 2, 260);
+
+    // Stats display
+    ctx.fillStyle = '#889'; ctx.font = '14px Courier New';
+    ctx.fillText(`Kills: ${stats.kills}   Damage Dealt: ${Math.floor(stats.damageDealt)}`, W / 2, 300);
+    ctx.fillText(`Highest Combo: ${stats.highestCombo}   Waves Completed: ${stats.wavesCompleted}`, W / 2, 325);
 
     ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
     ctx.beginPath(); ctx.roundRect(W / 2 - 120, 358, 240, 52, 10); ctx.fill();
@@ -1315,64 +1712,159 @@ function renderVictory() {
     ctx.fillText('PLAY AGAIN', W / 2, 390);
 }
 
+// Fullscreen button (top-right corner)
+function renderFullscreenButton() {
+    const bx = W - 34, by = 4, bw = 28, bh = 22;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.fillStyle = '#aaa'; ctx.font = '14px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('\u26F6', bx + bw / 2, by + bh / 2);
+    ctx.restore();
+}
+
 // ============================================================
-// INPUT — CLICK & KEYBOARD
+// 17. INPUT HANDLERS (click, keydown - with char select, dash, fullscreen)
 // ============================================================
+function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+        canvas.requestFullscreen().catch(() => {});
+    } else {
+        document.exitFullscreen().catch(() => {});
+    }
+}
+
+function isFullscreenBtnHit(mx, my) {
+    const bx = W - 34, by = 4, bw = 28, bh = 22;
+    return mx >= bx && mx <= bx + bw && my >= by && my <= by + bh;
+}
+
 canvas.addEventListener('mousemove', () => {
-    if (gameState !== STATE.SHOP) return;
-    const cw = 170, ch = 195, gap = 12;
-    const totalW = 4 * cw + 3 * gap;
-    const sx = (W - totalW) / 2, sy = 74;
-    hoveredCard = -1;
-    for (let i = 0; i < 4; i++) {
-        const x = sx + i * (cw + gap);
-        if (mouse.x >= x && mouse.x <= x + cw && mouse.y >= sy && mouse.y <= sy + ch) hoveredCard = i;
+    if (gameState === STATE.SHOP) {
+        const cw = 170, ch = 195, gap = 12;
+        const totalW = 4 * cw + 3 * gap;
+        const sx = (W - totalW) / 2, sy = 74;
+        hoveredCard = -1;
+        for (let i = 0; i < 4; i++) {
+            const x = sx + i * (cw + gap);
+            if (mouse.x >= x && mouse.x <= x + cw && mouse.y >= sy && mouse.y <= sy + ch) hoveredCard = i;
+        }
+    }
+    if (gameState === STATE.CHAR_SELECT) {
+        const cw = 230, ch_h = 160, gapX = 18, gapY = 14;
+        const cols = 3;
+        const totalW = cols * cw + (cols - 1) * gapX;
+        const startX = (W - totalW) / 2;
+        const startY = 88;
+        hoveredCharIdx = -1;
+        for (let idx = 0; idx < CHAR_ORDER.length; idx++) {
+            const col = idx % cols, row = Math.floor(idx / cols);
+            const x = startX + col * (cw + gapX);
+            const y = startY + row * (ch_h + gapY);
+            if (mouse.x >= x && mouse.x <= x + cw && mouse.y >= y && mouse.y <= y + ch_h) {
+                hoveredCharIdx = idx;
+            }
+        }
     }
 });
 
 canvas.addEventListener('click', () => {
     const { x: mx, y: my } = mouse;
+
+    // Fullscreen button (all states)
+    if (isFullscreenBtnHit(mx, my)) { toggleFullscreen(); return; }
+
     if (gameState === STATE.MENU) {
-        if (mx >= W / 2 - 115 && mx <= W / 2 + 115 && my >= 300 && my <= 356) startNewGame();
+        if (mx >= W / 2 - 115 && mx <= W / 2 + 115 && my >= 320 && my <= 376) {
+            getAC(); // init audio on user gesture
+            gameState = STATE.CHAR_SELECT;
+        }
+    } else if (gameState === STATE.CHAR_SELECT) {
+        const cw = 230, ch_h = 160, gapX = 18, gapY = 14;
+        const cols = 3;
+        const totalW = cols * cw + (cols - 1) * gapX;
+        const startX = (W - totalW) / 2;
+        const startY = 88;
+        for (let idx = 0; idx < CHAR_ORDER.length; idx++) {
+            const col = idx % cols, row = Math.floor(idx / cols);
+            const x = startX + col * (cw + gapX);
+            const y = startY + row * (ch_h + gapY);
+            if (mx >= x && mx <= x + cw && my >= y && my <= y + ch_h) {
+                startNewGame(CHAR_ORDER[idx]);
+                return;
+            }
+        }
     } else if (gameState === STATE.SHOP) {
         const cw = 170, ch = 195, gap = 12;
         const totalW = 4 * cw + 3 * gap;
         const sx = (W - totalW) / 2, sy = 74;
         const btnY = sy + ch + 12;
-        // Card clicks
         for (let i = 0; i < 4; i++) {
             const x = sx + i * (cw + gap);
             if (mx >= x && mx <= x + cw && my >= sy && my <= sy + ch) { buyUpgrade(i); return; }
         }
-        // Reroll button
         if (mx >= sx && mx <= sx + 180 && my >= btnY && my <= btnY + 40) { rerollShop(); return; }
-        // Continue button
         const contX = W - sx - 200;
         if (mx >= contX && mx <= contX + 200 && my >= btnY && my <= btnY + 40) { beginNextWave(); return; }
     } else if (gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) {
-        if (mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= 358 && my <= 420) startNewGame();
+        if (mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= 358 && my <= 420) {
+            gameState = STATE.CHAR_SELECT;
+        }
     }
 });
 
 window.addEventListener('keydown', e => {
-    if (e.key === 'm' || e.key === 'M') {
+    const key = e.key.toLowerCase();
+
+    // Mute toggle
+    if (key === 'm') {
         if (musicMuted) resumeBGMusic(); else stopBGMusic();
     }
-    if (gameState === STATE.MENU && (e.key === 'Enter' || e.key === ' ')) startNewGame();
+
+    // Fullscreen toggle
+    if (key === 'f' && gameState !== STATE.SHOP) {
+        toggleFullscreen();
+    }
+
+    // Dash
+    if (key === ' ' && gameState === STATE.PLAYING) {
+        e.preventDefault();
+        performDash();
+        return;
+    }
+
+    if (gameState === STATE.MENU && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        getAC();
+        gameState = STATE.CHAR_SELECT;
+    }
+
+    if (gameState === STATE.CHAR_SELECT) {
+        const num = parseInt(e.key);
+        if (num >= 1 && num <= 6) {
+            startNewGame(CHAR_ORDER[num - 1]);
+        }
+    }
+
     if (gameState === STATE.SHOP) {
         if (e.key === '1') buyUpgrade(0);
         else if (e.key === '2') buyUpgrade(1);
         else if (e.key === '3') buyUpgrade(2);
         else if (e.key === '4') buyUpgrade(3);
-        else if (e.key === 'r' || e.key === 'R') rerollShop();
+        else if (key === 'r') rerollShop();
         else if (e.key === 'Enter') { e.preventDefault(); beginNextWave(); }
-        else if (e.key === ' ') { e.preventDefault(); beginNextWave(); }
     }
-    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter') startNewGame();
+
+    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter') {
+        gameState = STATE.CHAR_SELECT;
+    }
 });
 
 // ============================================================
-// GAME LOOP
+// 18. GAME LOOP
 // ============================================================
 let lastTime = 0;
 function loop(timestamp) {
