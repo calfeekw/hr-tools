@@ -8,6 +8,10 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const W = 800, H = 600;
+
+// Visual feedback toggles (accessibility)
+let SCREEN_SHAKE_ENABLED = true;
+let FLASH_EFFECTS_ENABLED = true;
 canvas.width = W;
 canvas.height = H;
 
@@ -57,21 +61,35 @@ canvas.addEventListener('mouseup',   e => { if (e.button === 0) mouse.down = fal
 window.addEventListener('blur', () => { mouse.down = false; });
 
 // ============================================================
-// 4. AUDIO (all existing SFX + sfxDash + BG music)
+// 4. AUDIO — Sound Manager + Music System
 // ============================================================
 let audioCtx = null;
+let sfxGain = null;
 let musicGain = null;
-let musicMuted = false;
+let masterGain = null;
+let allMuted = false;
+let activeSfxCount = 0;
+const MAX_CONCURRENT_SFX = 8;
 
 function getAC() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 1.0;
+        masterGain.connect(audioCtx.destination);
+        sfxGain = audioCtx.createGain();
+        sfxGain.gain.value = 0.8;
+        sfxGain.connect(masterGain);
         musicGain = audioCtx.createGain();
         musicGain.gain.value = 0.13;
-        musicGain.connect(audioCtx.destination);
+        musicGain.connect(masterGain);
     }
     return audioCtx;
 }
+
+function setMasterVolume(v) { if (masterGain) masterGain.gain.value = clamp(v, 0, 1); }
+function setSFXVolume(v)    { if (sfxGain) sfxGain.gain.value = clamp(v, 0, 1); }
+function setMusicVolume(v)  { if (musicGain) musicGain.gain.value = clamp(v, 0, 1); }
 
 function schedOsc(freq, time, dur, type, vol, dest) {
     const ac = getAC();
@@ -80,7 +98,20 @@ function schedOsc(freq, time, dur, type, vol, dest) {
     osc.type = type; osc.frequency.value = freq;
     g.gain.setValueAtTime(vol, time);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
-    osc.connect(g); g.connect(dest || ac.destination);
+    osc.connect(g); g.connect(dest || sfxGain);
+    osc.start(time); osc.stop(time + dur + 0.01);
+}
+
+function schedOscSweep(freqStart, freqEnd, time, dur, type, vol, dest) {
+    const ac = getAC();
+    const osc = ac.createOscillator();
+    const g = ac.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqStart, time);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), time + dur);
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    osc.connect(g); g.connect(dest || sfxGain);
     osc.start(time); osc.stop(time + dur + 0.01);
 }
 
@@ -94,7 +125,7 @@ function schedNoise(time, dur, vol, hpFreq, dest) {
     const g = ac.createGain();
     g.gain.setValueAtTime(vol, time);
     g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
-    src.connect(filt); filt.connect(g); g.connect(dest || ac.destination);
+    src.connect(filt); filt.connect(g); g.connect(dest || sfxGain);
     src.start(time);
 }
 
@@ -109,12 +140,43 @@ function schedKick(time) {
     osc.start(time); osc.stop(time + 0.32);
 }
 
-// SFX
-function sfxShoot()   { const ac = getAC(); if (!ac) return; schedOsc(900, ac.currentTime, 0.04, 'square', 0.08); }
-function sfxHit()     { const ac = getAC(); if (!ac) return; schedOsc(200, ac.currentTime, 0.07, 'sawtooth', 0.14); }
-function sfxPlayerHurt() { const ac = getAC(); if (!ac) return; schedOsc(100, ac.currentTime, 0.18, 'sawtooth', 0.28); schedNoise(ac.currentTime, 0.1, 0.18, 150); }
+function canPlaySfx() {
+    if (allMuted || activeSfxCount >= MAX_CONCURRENT_SFX) return false;
+    activeSfxCount++;
+    setTimeout(() => { activeSfxCount = Math.max(0, activeSfxCount - 1); }, 100);
+    return true;
+}
+
+// Weapon-specific SFX
+function sfxWeapon(weaponId) {
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
+    const t = ac.currentTime;
+    switch (weaponId) {
+        case 'stapler':     // Percussive click
+            schedOsc(1200, t, 0.03, 'square', 0.08); schedNoise(t, 0.02, 0.06, 2000); break;
+        case 'rubberband':  // High-pitched twang, pitch bend down
+            schedOscSweep(1400, 600, t, 0.08, 'sine', 0.07); break;
+        case 'coffeemug':   // Low thud
+            schedOsc(120, t, 0.15, 'triangle', 0.12); schedNoise(t, 0.08, 0.04, 100); break;
+        case 'keyboard':    // Sharp mechanical clack
+            schedNoise(t, 0.04, 0.15, 1500); schedOsc(800, t, 0.02, 'square', 0.06); break;
+        case 'usb':         // Low hum pulse
+            schedOsc(220, t, 0.1, 'sine', 0.04); schedOsc(223, t, 0.1, 'sine', 0.04); break;
+        case 'laser':       // Sci-fi zap, fast pitch sweep
+            schedOscSweep(2000, 400, t, 0.08, 'sawtooth', 0.06); break;
+        case 'sticky':      // Soft thwip
+            schedNoise(t, 0.06, 0.05, 400); schedOsc(300, t, 0.04, 'sine', 0.04); break;
+        case 'tpsreport':   // Heavy slam
+            schedOsc(80, t, 0.25, 'square', 0.14); schedNoise(t, 0.1, 0.08, 80); break;
+        default:            // Fallback generic
+            schedOsc(900, t, 0.04, 'square', 0.08); break;
+    }
+}
+function sfxShoot(weaponId) { sfxWeapon(weaponId); }
+function sfxHit()     { const ac = getAC(); if (!ac || !canPlaySfx()) return; schedOsc(200, ac.currentTime, 0.07, 'sawtooth', 0.14); }
+function sfxPlayerHurt() { const ac = getAC(); if (!ac || !canPlaySfx()) return; schedOsc(100, ac.currentTime, 0.18, 'sawtooth', 0.28); schedNoise(ac.currentTime, 0.1, 0.18, 150); }
 function sfxEnemyDie() {
-    const ac = getAC(); if (!ac) return;
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
     const t = ac.currentTime;
     schedOsc(440, t, 0.06, 'square', 0.1); schedOsc(330, t + 0.06, 0.06, 'square', 0.1); schedOsc(220, t + 0.12, 0.1, 'square', 0.1);
 }
@@ -127,11 +189,11 @@ function sfxWaveComplete() {
     [523, 659, 784, 1047, 1319].forEach((f, i) => schedOsc(f, ac.currentTime + i * 0.08, 0.15, 'sine', 0.22));
 }
 function sfxBuy() {
-    const ac = getAC(); if (!ac) return;
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
     schedOsc(659, ac.currentTime, 0.08, 'sine', 0.2); schedOsc(784, ac.currentTime + 0.08, 0.1, 'sine', 0.2);
 }
 function sfxReroll() {
-    const ac = getAC(); if (!ac) return;
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
     schedOsc(440, ac.currentTime, 0.06, 'square', 0.1); schedOsc(350, ac.currentTime + 0.06, 0.06, 'square', 0.1);
 }
 function sfxBossAppear() {
@@ -139,47 +201,107 @@ function sfxBossAppear() {
     for (let i = 0; i < 5; i++) schedOsc(440 / (i + 1), ac.currentTime + i * 0.14, 0.2, 'sawtooth', 0.25);
 }
 function sfxDash() {
-    const ac = getAC(); if (!ac) return;
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
     const t = ac.currentTime;
     schedNoise(t, 0.12, 0.2, 800);
     schedOsc(600, t, 0.06, 'sine', 0.12);
     schedOsc(400, t + 0.04, 0.08, 'sine', 0.08);
 }
+function sfxXPPickup() {
+    const ac = getAC(); if (!ac || !canPlaySfx()) return;
+    schedOsc(1200, ac.currentTime, 0.04, 'sine', 0.06);
+}
 
-// Background music loop
+// ============================================================
+// 4b. MUSIC SYSTEM — Phase-based procedural music
+// ============================================================
 let _musicNextStart = 0;
+let _musicPhase = 'menu';   // menu, combat_early, combat_late, boss, victory, defeat
+let _musicTimeout = null;
+
+function getMusicPhase() {
+    if (gameState === STATE.MENU || gameState === STATE.CHAR_SELECT) return 'menu';
+    if (gameState === STATE.SHOP || gameState === STATE.WAVE_END) return 'shop';
+    if (gameState === STATE.VICTORY) return 'victory';
+    if (gameState === STATE.GAME_OVER) return 'defeat';
+    // Playing
+    const isBoss = wave % 5 === 0 && wave > 0 && enemies.some(e => e.isBoss);
+    if (isBoss) return 'boss';
+    if (wave > 10) return 'combat_late';
+    return 'combat_early';
+}
+
 function startBGMusic() {
     getAC();
     _musicNextStart = audioCtx.currentTime + 0.1;
     scheduleMusicLoop();
 }
-function stopBGMusic() { musicMuted = true; if (musicGain) musicGain.gain.value = 0; }
-function resumeBGMusic() { musicMuted = false; if (musicGain) musicGain.gain.value = 0.13; }
+function stopBGMusic() { allMuted = true; if (musicGain) musicGain.gain.value = 0; if (sfxGain) sfxGain.gain.value = 0; }
+function resumeBGMusic() { allMuted = false; if (musicGain) musicGain.gain.value = 0.13; if (sfxGain) sfxGain.gain.value = 0.8; }
 
 function scheduleMusicLoop() {
-    if (musicMuted || !audioCtx) return;
+    if (allMuted || !audioCtx) return;
     const ac = audioCtx;
-    const bpm = 122;
+    const phase = getMusicPhase();
+    _musicPhase = phase;
+
+    let bpm, bassSeq, leadSeq, useKick = true, useHihat = true;
+
+    if (phase === 'shop' || phase === 'menu') {
+        // Slow lo-fi elevator music — C-Am-F-G
+        bpm = 80;
+        bassSeq  = [130.81, 0, 110, 0, 174.61, 0, 196, 0];
+        leadSeq  = [523.25, 0, 440, 0, 349.23, 0, 392, 523.25];
+        useKick = false;
+    } else if (phase === 'combat_early') {
+        // Upbeat combat — 120 BPM
+        bpm = 120;
+        bassSeq  = [130.81, 0, 130.81, 0, 155.56, 0, 130.81, 155.56];
+        leadSeq  = [523.25, 0, 659.25, 0, 783.99, 0, 659.25, 523.25];
+    } else if (phase === 'combat_late') {
+        // High intensity — 140 BPM, more aggressive
+        bpm = 140;
+        bassSeq  = [130.81, 155.56, 130.81, 110, 155.56, 174.61, 130.81, 155.56];
+        leadSeq  = [783.99, 0, 659.25, 783.99, 1046.5, 0, 783.99, 659.25];
+    } else if (phase === 'boss') {
+        // Heavy, ominous half-time
+        bpm = 100;
+        bassSeq  = [65.41, 0, 0, 65.41, 0, 77.78, 0, 65.41];
+        leadSeq  = [261.63, 0, 311.13, 0, 261.63, 0, 233.08, 0];
+    } else if (phase === 'victory') {
+        bpm = 110;
+        bassSeq  = [261.63, 0, 329.63, 0, 392, 0, 523.25, 0];
+        leadSeq  = [523.25, 659.25, 783.99, 1046.5, 0, 0, 0, 0];
+        useKick = false;
+    } else if (phase === 'defeat') {
+        bpm = 70;
+        bassSeq  = [130.81, 0, 0, 123.47, 0, 0, 110, 0];
+        leadSeq  = [261.63, 0, 246.94, 0, 220, 0, 0, 0];
+        useKick = false; useHihat = false;
+    } else {
+        bpm = 122;
+        bassSeq  = [130.81, 0, 130.81, 0, 155.56, 0, 130.81, 155.56];
+        leadSeq  = [523.25, 0, 659.25, 0, 783.99, 0, 659.25, 523.25];
+    }
+
     const b = 60 / bpm;
     const start = _musicNextStart;
-
-    // 8-beat pattern in Cm
-    const bassSeq  = [130.81, 0, 130.81, 0, 155.56, 0, 130.81, 155.56];
-    const leadSeq  = [523.25, 0, 659.25, 0, 783.99, 0, 659.25, 523.25];
 
     for (let i = 0; i < 8; i++) {
         const t = start + i * b;
         if (bassSeq[i] > 0) schedOsc(bassSeq[i], t, b * 0.75, 'sawtooth', 0.06, musicGain);
         if (i % 2 === 0 && leadSeq[i] > 0) schedOsc(leadSeq[i], t, b * 0.4, 'square', 0.03, musicGain);
-        if (i === 0 || i === 4) schedKick(t);
-        if (i === 2 || i === 6) schedNoise(t, 0.12, 0.12, 600, musicGain);
-        schedNoise(t, 0.05, 0.018, 7000, musicGain);
-        schedNoise(t + b * 0.5, 0.05, 0.012, 7000, musicGain);
+        if (useKick && (i === 0 || i === 4)) schedKick(t);
+        if (useHihat) {
+            if (i === 2 || i === 6) schedNoise(t, 0.12, 0.12, 600, musicGain);
+            schedNoise(t, 0.05, 0.018, 7000, musicGain);
+            schedNoise(t + b * 0.5, 0.05, 0.012, 7000, musicGain);
+        }
     }
 
     _musicNextStart = start + 8 * b;
     const delay = Math.max(0, (_musicNextStart - ac.currentTime - 0.8) * 1000);
-    setTimeout(scheduleMusicLoop, delay);
+    _musicTimeout = setTimeout(scheduleMusicLoop, delay);
 }
 
 // ============================================================
@@ -283,6 +405,86 @@ function pushOutRect(entity, r) {
 }
 
 // ============================================================
+// 5b. ANIMATION STATES
+// ============================================================
+// Lightweight animation system using squash/stretch on existing emoji rendering
+function getAnimScale(entity, time) {
+    const state = entity.animState || 'idle';
+    const t = time;
+    if (state === 'idle') {
+        // Gentle breathing pulse
+        return { sx: 1 + Math.sin(t * 2.5) * 0.03, sy: 1 - Math.sin(t * 2.5) * 0.03 };
+    } else if (state === 'walk') {
+        // Squash/stretch bounce while moving
+        const bounce = Math.sin(t * 10) * 0.08;
+        return { sx: 1 - bounce, sy: 1 + bounce };
+    } else if (state === 'attack') {
+        // Quick squash on attack
+        const at = entity.attackAnimT || 0;
+        const prog = clamp(at / 0.15, 0, 1);
+        return { sx: 1 + prog * 0.15, sy: 1 - prog * 0.1 };
+    } else if (state === 'death') {
+        // Shrink + fade
+        const dt = entity.deathAnimT || 0;
+        const prog = clamp(dt / 0.3, 0, 1);
+        const s = 1 - prog * 0.8;
+        return { sx: s, sy: s, alpha: 1 - prog };
+    }
+    return { sx: 1, sy: 1 };
+}
+
+function updateAnimState(entity, isMoving, dt) {
+    if (entity.dead && entity.animState !== 'death') {
+        entity.animState = 'death';
+        entity.deathAnimT = 0;
+    }
+    if (entity.animState === 'death') {
+        entity.deathAnimT = (entity.deathAnimT || 0) + dt;
+        return;
+    }
+    if (entity.attackAnimT > 0) {
+        entity.attackAnimT -= dt;
+        entity.animState = 'attack';
+    } else if (isMoving) {
+        entity.animState = 'walk';
+    } else {
+        entity.animState = 'idle';
+    }
+}
+
+// ============================================================
+// 5c. ENVIRONMENT THEMES
+// ============================================================
+const ENVIRONMENTS = {
+    cubicle:    { bg: '#1a1a2a', grid: '#242438', name: 'Cubicle Farm',   props: ['\u{1FAB4}', '\u{1F4C1}', '\u2615'] },   // potted plant, folder, coffee
+    breakroom:  { bg: '#1c1a18', grid: '#2a2622', name: 'Break Room',     props: ['\u{1F37F}', '\u{1FAD6}', '\u{1F9CB}'] },  // popcorn, teapot, juice
+    server:     { bg: '#0a0e1a', grid: '#141e30', name: 'Server Room',    props: ['\u{1F4A1}', '\u{1F50C}', '\u{1F4DF}'] },  // lightbulb, plug, pager
+    corner:     { bg: '#1e1810', grid: '#302818', name: 'Corner Office',  props: ['\u{1F3C6}', '\u{1F5BC}\uFE0F', '\u{1F33F}'] },  // trophy, frame, herb
+};
+
+function getEnvironment() {
+    if (wave <= 5)  return ENVIRONMENTS.cubicle;
+    if (wave <= 10) return ENVIRONMENTS.breakroom;
+    if (wave <= 15) return ENVIRONMENTS.server;
+    return ENVIRONMENTS.corner;
+}
+
+// Static decorative props placed per environment (generated once per theme change)
+let envProps = [];
+let currentEnvName = '';
+
+function generateEnvProps(env) {
+    envProps = [];
+    for (let i = 0; i < 3; i++) {
+        envProps.push({
+            emoji: pick(env.props),
+            x: rand(40, W - 40),
+            y: rand(40, H - 40),
+        });
+    }
+}
+
+// ============================================================
 // 6. WEAPON DEFINITIONS
 // ============================================================
 const WEAPONS = {
@@ -328,6 +530,7 @@ function createPlayer(charId) {
         dashCooldown: 2.5,
         dashTimer: 0,
         isDashing: false,
+        animState: 'idle', attackAnimT: 0, deathAnimT: 0,
     };
 }
 let player;
@@ -335,13 +538,23 @@ let player;
 // Dash afterimage trail
 let dashAfterimages = [];
 
-function playerEffectiveDmg(w) { return w.baseDmg * player.stats.damage * (1 + (w.level - 1) * 0.25); }
+function playerEffectiveDmg(w) {
+    let mult = 1;
+    if (player.comboDmgBonus) mult += comboCount * player.comboDmgBonus;
+    if (player.waveDmgBonus) mult += wave * player.waveDmgBonus;
+    return w.baseDmg * player.stats.damage * (1 + (w.level - 1) * 0.25) * mult;
+}
 function playerEffectiveRate(w) { return (w.baseRate || 1) * player.stats.atkSpd * (1 + (w.level - 1) * 0.12); }
 function playerEffectiveRange(w) { return w.range * player.stats.range; }
 
 function playerTakeDamage(amt) {
     if (player.invTimer > 0) return;
     if (player.isDashing) return;
+    // Dodge chance from VPN Token relic
+    if ((player.dodgeChance || 0) > 0 && Math.random() < player.dodgeChance) {
+        addFloating(player.x, player.y - 20, 'DODGE!', '#4af');
+        return;
+    }
     const dmg = Math.max(1, amt - player.stats.armor);
     player.hp -= dmg;
     player.invTimer = player.invDur;
@@ -457,6 +670,10 @@ function updatePlayer(dt) {
     player.y = clamp(player.y, player.radius, H - player.radius);
     pushOutRect(player, player.radius);
 
+    // Animation state
+    const isMoving = dx !== 0 || dy !== 0;
+    updateAnimState(player, isMoving, dt);
+
     if (player.invTimer > 0) player.invTimer -= dt;
 
     // Regen
@@ -469,7 +686,7 @@ function updatePlayer(dt) {
     for (let i = xpOrbs.length - 1; i >= 0; i--) {
         const o = xpOrbs[i];
         const d = dist(player, o);
-        if (d < 50) { playerGainXP(o.v); xpOrbs.splice(i, 1); }
+        if (d < 50) { addXPSparkle(o.x, o.y); sfxXPPickup(); playerGainXP(o.v); xpOrbs.splice(i, 1); }
         else if (d < 160) { const n = norm(o.x - player.x, o.y - player.y); o.x -= n.x * 260 * dt; o.y -= n.y * 260 * dt; }
     }
     // Auto-collect materials
@@ -537,7 +754,7 @@ function updateWeapons(dt) {
                 }
                 if (hit || enemies.length > 0) {
                     player.weaponTimers[i] = cooldown;
-                    if (hit) particles.push({ type: 'melee', x: player.x, y: player.y, r: range, t: 0.22 });
+                    if (hit) { sfxShoot(w.id); particles.push({ type: 'melee', x: player.x, y: player.y, r: range, t: 0.22 }); }
                 }
             }
             continue;
@@ -557,8 +774,9 @@ function updateWeapons(dt) {
 }
 
 function fireWeapon(w, target) {
-    sfxShoot();
+    sfxShoot(w.id);
     const n = norm(target.x - player.x, target.y - player.y);
+    addMuzzleFlash(player.x + n.x * (player.radius + 8), player.y + n.y * (player.radius + 8), n.x, n.y, w.color);
     const speed = w.projSpeed || 300;
     bullets.push({
         x: player.x + n.x * (player.radius + 6),
@@ -619,32 +837,56 @@ function spawnEnemy(type, x, y) {
         phase: 1,
         type,
         dead: false,
+        animState: 'walk', attackAnimT: 0, deathAnimT: 0,
     };
 }
 
-function enemyTakeDamage(e, dmg) {
+function enemyTakeDamage(e, dmg, skipKnockback) {
     if (e.dead) return;
     e.hp -= dmg;
-    e.flashT = 0.12;
+    e.flashT = FLASH_EFFECTS_ENABLED ? 0.12 : 0;
     stats.damageDealt += dmg;
     addFloating(e.x + rand(-8, 8), e.y - e.radius - 4, Math.floor(dmg).toString(), '#fff');
     if (player.stats.lifesteal > 0) playerHeal(dmg * player.stats.lifesteal);
+    // Small knockback away from player on all hits (unless skipKnockback, e.g. DOT)
+    if (!skipKnockback && !e.isBoss) {
+        const n = norm(e.x - player.x, e.y - player.y);
+        e.kbx += n.x * 60; e.kby += n.y * 60;
+    }
     if (e.hp <= 0) enemyDie(e);
 }
 
 function enemyDie(e) {
     e.dead = true;
     stats.kills++;
+    // Boss tracking
+    if (e.isBoss) unlockState.bossesDefeated++;
     // Combo system
     comboCount++;
     comboTimer = 2.0;
     if (comboCount > stats.highestCombo) stats.highestCombo = comboCount;
+    checkComboMilestone();
 
+    // Material drops with combo bonus
+    const matBonus = 1 + getComboMatBonus();
+    const matMult = (player.matDropMult || 1) * matBonus;
     xpOrbs.push({ x: e.x, y: e.y, v: e.xp });
-    if (Math.random() < 0.65 + player.stats.luck * 0.08) matDrops.push({ x: e.x, y: e.y, v: e.mat });
-    for (let i = 0; i < 6; i++) particles.push({ type: 'death', x: e.x + rand(-12, 12), y: e.y + rand(-12, 12), vx: rand(-130, 130), vy: rand(-130, 130), r: rand(3, 7), color: e.color, t: rand(0.3, 0.7) });
+    if (Math.random() < 0.65 + player.stats.luck * 0.08) {
+        matDrops.push({ x: e.x, y: e.y, v: Math.ceil(e.mat * matMult) });
+    }
+
+    // Elite: split into 2 regular enemies on death
+    if (e.isElite && e.type === 'intern') {
+        for (let i = 0; i < 2; i++) enemies.push(spawnEnemy('intern', e.x + rand(-20, 20), e.y + rand(-20, 20)));
+    }
+    // Elite accountant: slow zone
+    if (e.isElite && e.type === 'accountant') {
+        particles.push({ type: 'aoe', x: e.x, y: e.y, maxR: 60, r: 0, color: '#228833', t: 3.0 });
+    }
+
+    addDeathParticles(e);
     sfxEnemyDie();
-    addShake(3, 0.15);
+    addShake(e.isBoss ? 8 : e.isElite ? 5 : 3, e.isBoss ? 0.3 : 0.15);
 }
 
 function updateEnemies(dt) {
@@ -660,8 +902,9 @@ function updateEnemies(dt) {
         if (e.slowT > 0) { e.slowT -= dt; if (e.slowT <= 0) e.slowMult = 1; }
         if (e.dotT > 0) {
             e.dotT -= dt; e.dotTick -= dt;
-            if (e.dotTick <= 0) { e.dotTick = 0.5; enemyTakeDamage(e, e.dotDps * 0.5); }
+            if (e.dotTick <= 0) { e.dotTick = 0.5; enemyTakeDamage(e, e.dotDps * 0.5, true); }
         }
+        updateAnimState(e, e.spd > 30, dt);
         if (!e.dead && dist(e, player) < e.radius + player.radius) playerTakeContactDamage(e.contactDps, dt);
     }
 }
@@ -867,7 +1110,11 @@ const WAVE_CONFIGS = (() => {
 function buildSpawnQueue(w) {
     const queue = [];
     const groups = WAVE_CONFIGS[w - 1] || [];
-    for (const g of groups) for (let i = 0; i < g.count; i++) queue.push(g.type);
+    // Apply adaptive spawn modifier
+    for (const g of groups) {
+        const count = w % 5 === 0 ? g.count : Math.max(1, Math.round(g.count * adaptiveSpawnMod));
+        for (let i = 0; i < count; i++) queue.push(g.type);
+    }
     return shuffle(queue);
 }
 
@@ -891,20 +1138,77 @@ let matDrops = [];
 // ============================================================
 // 12. PARTICLES & FLOATERS
 // ============================================================
+const MAX_PARTICLES = 200;
 let particles = [];
 let floaters = [];
 
+// Themed death particle configs per enemy type
+const DEATH_PARTICLES = {
+    intern:     { colors: ['#fff', '#f5e6c8', '#ddd'], shape: 'rect', count: 8, sizeMin: 2, sizeMax: 5 },   // paper scraps
+    manager:    { colors: ['#8B4513', '#6b3410', '#a0522d'], shape: 'circle', count: 10, sizeMin: 2, sizeMax: 6 }, // coffee splash
+    printer:    { colors: ['#fff', '#eee', '#ddd'], shape: 'rect', count: 12, sizeMin: 4, sizeMax: 8 },     // paper jam
+    hrrep:      { colors: ['#ffe44d', '#ff88aa', '#88ee88'], shape: 'rect', count: 10, sizeMin: 3, sizeMax: 6 }, // sticky confetti
+    itguy:      { colors: ['#00aaff', '#00ff88', '#4488ff'], shape: 'rect', count: 8, sizeMin: 2, sizeMax: 4 }, // pixel fragments
+    accountant: { colors: ['#228833', '#fff', '#88cc88'], shape: 'rect', count: 8, sizeMin: 3, sizeMax: 6 },  // spreadsheet cells
+};
+
 function addFloating(x, y, text, color) { floaters.push({ x, y, text, color, vy: -72, t: 1.0, mt: 1.0 }); }
-function addShake(mag, dur) { if (mag > screenShake.mag) { screenShake.mag = mag; screenShake.t = dur; } }
+
+function addDeathParticles(e) {
+    const cfg = DEATH_PARTICLES[e.type] || { colors: [e.color], shape: 'circle', count: 6, sizeMin: 3, sizeMax: 7 };
+    const count = Math.min(cfg.count, MAX_PARTICLES - particles.length);
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            type: 'themed_death', shape: cfg.shape,
+            x: e.x + rand(-10, 10), y: e.y + rand(-10, 10),
+            vx: rand(-160, 160), vy: rand(-160, 160),
+            r: rand(cfg.sizeMin, cfg.sizeMax),
+            color: pick(cfg.colors),
+            t: rand(0.3, 0.8), mt: rand(0.3, 0.8),
+        });
+    }
+}
+
+function addMuzzleFlash(x, y, dx, dy, color) {
+    const count = Math.min(3, MAX_PARTICLES - particles.length);
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            type: 'muzzle',
+            x: x, y: y,
+            vx: dx * rand(80, 200) + rand(-40, 40), vy: dy * rand(80, 200) + rand(-40, 40),
+            r: rand(1.5, 3), color: color,
+            t: rand(0.08, 0.15), mt: 0.15,
+        });
+    }
+}
+
+function addXPSparkle(x, y) {
+    const count = Math.min(4, MAX_PARTICLES - particles.length);
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            type: 'sparkle',
+            x: x + rand(-6, 6), y: y + rand(-6, 6),
+            vx: rand(-50, 50), vy: rand(-80, -30),
+            r: rand(1.5, 3), color: pick(['#4af', '#8cf', '#fff']),
+            t: rand(0.2, 0.4), mt: 0.4,
+        });
+    }
+}
+function addShake(mag, dur) { if (!SCREEN_SHAKE_ENABLED) return; if (mag > screenShake.mag) { screenShake.mag = mag; screenShake.t = dur; } }
 
 function updateParticles(dt) {
     for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.t -= dt;
-        if (p.type === 'death') { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= Math.max(0, 1 - 5 * dt); p.vy *= Math.max(0, 1 - 5 * dt); }
+        if (p.type === 'death' || p.type === 'themed_death' || p.type === 'muzzle' || p.type === 'sparkle') {
+            p.x += p.vx * dt; p.y += p.vy * dt;
+            p.vx *= Math.max(0, 1 - 5 * dt); p.vy *= Math.max(0, 1 - 5 * dt);
+        }
         if (p.type === 'aoe') p.r = p.maxR * (1 - p.t / 0.5);
         if (p.t <= 0) particles.splice(i, 1);
     }
+    // Enforce particle cap by removing oldest
+    while (particles.length > MAX_PARTICLES) particles.shift();
     for (let i = floaters.length - 1; i >= 0; i--) {
         const f = floaters[i];
         f.y += f.vy * dt; f.vy *= Math.max(0, 1 - 4 * dt); f.t -= dt;
@@ -950,17 +1254,21 @@ let rerollCount = 0;
 function generateShopOptions(count = 4) {
     const ownedIds = new Set(player.weapons.map(w => w.id));
     const currentIds = new Set(shopOptions.map(o => o.id));
+    const maxWeapons = player.maxWeapons || 6;
 
     const available = UPGRADE_POOL.filter(u => {
         if (currentIds.has(u.id)) return false;
-        if (u.cat === 'weapon') return !ownedIds.has(u.weaponId) && player.weapons.length < 6;
+        if (u.cat === 'weapon') {
+            if (!isWeaponUnlocked(u.weaponId)) return false;
+            return !ownedIds.has(u.weaponId) && player.weapons.length < maxWeapons;
+        }
         return true;
     });
     // Add weapon upgrade options
     const weaponUpgrades = [];
     for (let i = 0; i < player.weapons.length; i++) {
         const w = player.weapons[i];
-        if (w.level < 3) {
+        if (w.level < 3 && !w.evolved) {
             const uid = `upg_${w.id}_${i}`;
             if (!currentIds.has(uid)) {
                 weaponUpgrades.push({
@@ -975,18 +1283,36 @@ function generateShopOptions(count = 4) {
             }
         }
     }
+    // Add relic options
+    const relicOptions = getRelicShopOptions();
+
+    // Evolution hint
+    if (pendingEvolution) {
+        const evo = pendingEvolution;
+        weaponUpgrades.unshift({
+            id: `evo_${evo.result.id}`,
+            name: evo.result.name,
+            emoji: evo.result.emoji,
+            desc: `EVOLVE! ${evo.result.name}`,
+            cost: 0, cat: 'evolution',
+            apply: () => { applyEvolution(evo); },
+        });
+    }
+
     const priceScale = 1 + (wave - 1) * 0.15;  // +15% cost per wave
-    const allOptions = shuffle([...available, ...weaponUpgrades]).slice(0, count);
-    allOptions.forEach(o => { o.cost = Math.ceil(o.cost * priceScale); });
+    const allOptions = shuffle([...available, ...weaponUpgrades, ...relicOptions]).slice(0, count);
+    allOptions.forEach(o => { if (o.cost > 0) o.cost = Math.ceil(o.cost * priceScale); });
     return allOptions;
 }
 
 function buyUpgrade(idx) {
     const upg = shopOptions[idx];
     if (!upg || player.materials < upg.cost) return;
-    player.materials -= upg.cost;
+    // Free purchase chance from Company Card relic
+    const isFree = upg.cost > 0 && Math.random() < (player.freeChance || 0);
+    if (!isFree) player.materials -= upg.cost;
     upg.apply(player);
-    addFloating(W / 2, H / 2 - 30, upg.name + '!', '#fd0');
+    addFloating(W / 2, H / 2 - 30, (isFree ? 'FREE! ' : '') + upg.name + '!', isFree ? '#0f0' : '#fd0');
     sfxBuy();
     shopOptions.splice(idx, 1);
     const extras = generateShopOptions(4 - shopOptions.length);
@@ -1017,6 +1343,8 @@ function beginNextWave() {
 function setGameState(s) {
     gameState = s;
     if (s === STATE.SHOP) {
+        checkEvolutions();
+        updateAdaptive();
         shopOptions = generateShopOptions(4);
         hoveredCard = -1;
         rerollCost = 2; rerollCount = 0;
@@ -1033,6 +1361,16 @@ function setGameState(s) {
     if (s === STATE.PLAYING && wave % 5 === 0) {
         setTimeout(sfxBossAppear, 500);
     }
+    if (s === STATE.GAME_OVER) {
+        updateMetaProgress();
+        runResults = buildRunResults(false);
+        resultsAnimTimer = 0;
+    }
+    if (s === STATE.VICTORY) {
+        updateMetaProgress();
+        runResults = buildRunResults(true);
+        resultsAnimTimer = 0;
+    }
 }
 
 function startNewGame(charId) {
@@ -1040,8 +1378,15 @@ function startNewGame(charId) {
     enemies = []; bullets = []; enemyBullets = []; xpOrbs = []; matDrops = []; particles = []; floaters = [];
     dashAfterimages = [];
     comboCount = 0; comboTimer = 0;
+    comboMilestoneText = ''; comboMilestoneTimer = 0;
     waveAnnounceTimer = 0;
     magnetActive = false; magnetTimer = 0;
+    playerRelics = [];
+    pendingEvolution = null;
+    pendingUnlocks = [];
+    runResults = null; resultsAnimTimer = 0;
+    adaptiveHistory = []; adaptiveSpawnMod = 1.0; adaptiveDmgMod = 1.0;
+    currentEnvName = '';
     resetStats();
     wave = 1;
     setGameState(STATE.PLAYING);
@@ -1055,11 +1400,29 @@ function startNewGame(charId) {
 function update(dt) {
     updateParticles(dt);
 
+    // Results screen animation timer
+    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && runResults) {
+        resultsAnimTimer += dt;
+    }
+
     if (gameState === STATE.PLAYING) {
         // Spawn from queue
         spawnTimer -= dt;
         if (spawnTimer <= 0 && spawnQueue.length > 0) {
-            enemies.push(spawnEnemy(spawnQueue.shift()));
+            const type = spawnQueue.shift();
+            const e = spawnEnemy(type);
+            // Elite chance: starting wave 8, 15% per enemy, capped
+            const maxElites = wave >= 15 ? 5 : 3;
+            const currentElites = enemies.filter(en => en.isElite).length;
+            if (wave >= 8 && !e.isBoss && currentElites < maxElites && Math.random() < 0.15) {
+                makeElite(e);
+            }
+            // Apply adaptive damage modifier
+            if (wave % 5 !== 0) {
+                e.dmg = Math.round(e.dmg * adaptiveDmgMod);
+                e.contactDps *= adaptiveDmgMod;
+            }
+            enemies.push(e);
             spawnTimer = Math.max(0.18, 1.3 - wave * 0.07);
         }
         updatePlayer(dt);
@@ -1068,6 +1431,8 @@ function update(dt) {
 
         // Wave announcement timer
         if (waveAnnounceTimer > 0) waveAnnounceTimer -= dt;
+        // Combo milestone timer
+        if (comboMilestoneTimer > 0) comboMilestoneTimer -= dt;
 
         // Wave done when queue empty + all enemies dead
         if (spawnQueue.length === 0 && enemies.length === 0) {
@@ -1137,6 +1502,7 @@ function render() {
             renderHUD();
             renderComboDisplay();
             renderDashCooldown();
+            renderRelicBar();
             if (wave % 5 === 0 && enemies.find(e => e.isBoss)) renderBossBar();
             // Wave announcement overlay
             renderWaveAnnouncement();
@@ -1154,13 +1520,31 @@ function render() {
 }
 
 function renderArena() {
-    ctx.fillStyle = '#1a1a2a';
+    const env = getEnvironment();
+    const isBossWave = wave % 5 === 0 && wave > 0;
+
+    // Update environment props on theme change
+    if (env.name !== currentEnvName) {
+        currentEnvName = env.name;
+        generateEnvProps(env);
+    }
+
+    ctx.fillStyle = env.bg;
     ctx.fillRect(0, 0, W, H);
-    ctx.strokeStyle = '#242438';
+    ctx.strokeStyle = env.grid;
     ctx.lineWidth = 1;
     for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
     for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
 
+    // Decorative props (visual only)
+    ctx.font = '20px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.globalAlpha = 0.3;
+    for (const prop of envProps) {
+        ctx.fillText(prop.emoji, prop.x, prop.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // Obstacles
     for (const o of OBSTACLES) {
         ctx.fillStyle = '#2e2018';
         ctx.fillRect(o.x, o.y, o.w, o.h);
@@ -1173,6 +1557,15 @@ function renderArena() {
         ctx.textAlign = 'center';
         ctx.fillStyle = '#fff';
         ctx.fillText('\u{1F5A5}\uFE0F', o.x + o.w / 2, o.y + o.h / 2 + 7);
+    }
+
+    // Boss wave vignette
+    if (isBossWave) {
+        const grad = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.8);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.4)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
     }
 }
 
@@ -1189,13 +1582,30 @@ function renderPickupsAndParticles() {
         ctx.fillText('\u{1F4B0}', m.x, m.y);
     }
     for (const p of particles) {
+        const alpha = p.mt > 0 ? clamp(p.t / p.mt, 0, 1) : 1;
         if (p.type === 'aoe') {
             ctx.save(); ctx.globalAlpha = (p.t / 0.5) * 0.5; ctx.fillStyle = p.color;
             ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
         } else if (p.type === 'death') {
-            const alpha = p.t / 0.7;
             ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = p.color;
             ctx.beginPath(); ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        } else if (p.type === 'themed_death') {
+            ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = p.color;
+            if (p.shape === 'rect') {
+                const s = p.r * alpha;
+                ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+            } else {
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.restore();
+        } else if (p.type === 'muzzle') {
+            ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = p.color;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+        } else if (p.type === 'sparkle') {
+            ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = p.color;
+            ctx.shadowColor = p.color; ctx.shadowBlur = 4;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.r * alpha, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0; ctx.restore();
         } else if (p.type === 'melee') {
             ctx.save(); ctx.globalAlpha = (p.t / 0.22) * 0.4; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
             ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
@@ -1229,18 +1639,40 @@ function renderBullets() {
 }
 
 function renderEnemies() {
+    const t = performance.now() / 1000;
     for (const e of enemies) {
+        const anim = getAnimScale(e, t);
         ctx.save();
+        if (anim.alpha !== undefined) ctx.globalAlpha = anim.alpha;
         if (e.flashT > 0) ctx.filter = 'brightness(4)';
         else if (e.slowT > 0) ctx.filter = 'hue-rotate(200deg) brightness(1.3)';
 
+        ctx.translate(e.x, e.y);
+        ctx.scale(anim.sx, anim.sy);
+
+        // Elite glow
+        if (e.isElite) {
+            ctx.shadowColor = '#ffcc00';
+            ctx.shadowBlur = 12 + Math.sin(t * 4) * 4;
+        }
+
         ctx.fillStyle = e.color;
-        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
         ctx.filter = 'none';
 
         ctx.font = `${e.radius * 1.4}px serif`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(e.emoji, e.x, e.y);
+        ctx.fillText(e.emoji, 0, 0);
+
+        // Elite crown indicator
+        if (e.isElite) {
+            ctx.font = `${e.radius * 0.7}px serif`;
+            ctx.fillText('\u{1F451}', 0, -e.radius - 4);
+        }
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.translate(Math.round(screenShake.x), Math.round(screenShake.y));
 
         if (e.hp < e.maxHp) {
             const bw = e.radius * 2, bx = e.x - e.radius, by = e.y - e.radius - 9;
@@ -1264,13 +1696,17 @@ function renderDashAfterimages() {
 }
 
 function renderPlayer() {
+    const t = performance.now() / 1000;
+    const anim = getAnimScale(player, t);
     ctx.save();
     if (player.invTimer > 0 && Math.floor(player.invTimer * 12) % 2 === 0) ctx.globalAlpha = 0.25;
+    ctx.translate(player.x, player.y);
+    ctx.scale(anim.sx, anim.sy);
     ctx.fillStyle = '#4488ff';
-    ctx.beginPath(); ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, player.radius, 0, Math.PI * 2); ctx.fill();
     ctx.font = `${player.radius * 1.5}px serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(selectedChar ? selectedChar.emoji : '\u{1F9D1}\u200D\u{1F4BB}', player.x, player.y);
+    ctx.fillText(selectedChar ? selectedChar.emoji : '\u{1F9D1}\u200D\u{1F4BB}', 0, 0);
     ctx.restore();
 }
 
@@ -1319,8 +1755,9 @@ function renderComboDisplay() {
     if (comboCount < 3) return;
     const scale = 1 + Math.sin(Date.now() * 0.008) * 0.1;
     const mult = getComboXPMultiplier();
+    const fontSize = comboCount >= 10 ? 26 : 22;
     ctx.save();
-    ctx.font = `bold ${Math.floor(22 * scale)}px Courier New`;
+    ctx.font = `bold ${Math.floor(fontSize * scale)}px Courier New`;
     ctx.textAlign = 'center';
     ctx.fillStyle = comboCount >= 10 ? '#ff4400' : comboCount >= 5 ? '#ffaa00' : '#ffdd00';
     ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 12;
@@ -1328,6 +1765,49 @@ function renderComboDisplay() {
     ctx.font = '12px Courier New'; ctx.shadowBlur = 0;
     ctx.fillStyle = '#aaf';
     ctx.fillText(`${mult}x XP`, player.x, player.y - 55);
+
+    // Combo timer bar
+    if (comboTimer > 0) {
+        const barW = 50, barH = 3;
+        const bx = player.x - barW / 2, by = player.y - 62;
+        ctx.fillStyle = '#333'; ctx.fillRect(bx, by, barW, barH);
+        ctx.fillStyle = '#fd0'; ctx.fillRect(bx, by, barW * (comboTimer / 2.0), barH);
+    }
+    ctx.restore();
+
+    // Combo milestone text
+    if (comboMilestoneTimer > 0) {
+        const alpha = clamp(comboMilestoneTimer / 0.5, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = 'bold 36px Courier New'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#fd0'; ctx.shadowColor = '#fd0'; ctx.shadowBlur = 20;
+        ctx.fillText(comboMilestoneText, W / 2, H / 2 - 80);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    // Speed trail at 15+ combo
+    if (comboCount >= 15 && !accessSettings.reducedMotion) {
+        ctx.save();
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = '#ffaa00';
+        ctx.beginPath(); ctx.arc(player.x - player.facing * 8, player.y, player.radius * 0.8, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+}
+
+function renderRelicBar() {
+    if (playerRelics.length === 0) return;
+    const y = H - 28;
+    ctx.save();
+    ctx.font = '16px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    const barW = playerRelics.length * 24 + 8;
+    ctx.fillRect(W / 2 - barW / 2, y - 10, barW, 22);
+    playerRelics.forEach((r, i) => {
+        ctx.fillText(r.emoji, W / 2 - barW / 2 + 12 + i * 24, y + 1);
+    });
     ctx.restore();
 }
 
@@ -1625,16 +2105,28 @@ function renderCharSelect() {
 
     for (let idx = 0; idx < CHAR_ORDER.length; idx++) {
         const ch_def = CHARACTERS[CHAR_ORDER[idx]];
+        const charId = CHAR_ORDER[idx];
+        const locked = !isCharUnlocked(charId);
         const col = idx % cols, row = Math.floor(idx / cols);
         const x = startX + col * (cw + gapX);
         const y = startY + row * (ch + gapY);
-        const hover = hoveredCharIdx === idx;
+        const hover = hoveredCharIdx === idx && !locked;
 
         // Card background
-        ctx.fillStyle = hover ? '#1a2255' : '#0f1530';
-        ctx.strokeStyle = hover ? '#66aaff' : '#334488';
+        ctx.fillStyle = locked ? '#0a0a14' : (hover ? '#1a2255' : '#0f1530');
+        ctx.strokeStyle = locked ? '#1a1a28' : (hover ? '#66aaff' : '#334488');
         ctx.lineWidth = hover ? 2 : 1;
         ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); ctx.stroke();
+
+        if (locked) {
+            ctx.fillStyle = '#555'; ctx.font = '36px serif'; ctx.textAlign = 'center';
+            ctx.fillText('\u{1F512}', x + cw / 2, y + ch / 2 - 10);
+            ctx.fillStyle = '#556'; ctx.font = '11px Courier New';
+            const cond = CHAR_UNLOCK_CONDITIONS[charId];
+            ctx.fillText(cond ? cond.desc : '', x + cw / 2, y + ch / 2 + 20);
+            ctx.fillText(ch_def.name, x + cw / 2, y + ch / 2 + 38);
+            continue;
+        }
 
         // Emoji
         ctx.font = '36px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
@@ -1672,48 +2164,8 @@ function renderCharSelect() {
     }
 }
 
-function renderGameOver() {
-    ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#ff3333'; ctx.font = 'bold 60px Courier New'; ctx.textAlign = 'center';
-    ctx.shadowColor = '#f00'; ctx.shadowBlur = 22;
-    ctx.fillText('TERMINATED', W / 2, 150);
-    ctx.shadowBlur = 0; ctx.fillStyle = '#aaa'; ctx.font = '20px Courier New';
-    ctx.fillText('Your employment has been terminated.', W / 2, 200);
-    ctx.fillText(`You survived to Wave ${wave} / ${MAX_WAVES}`, W / 2, 235);
-    ctx.fillText(`Level reached: ${player.level}`, W / 2, 265);
-
-    // Stats display
-    ctx.fillStyle = '#889'; ctx.font = '14px Courier New';
-    ctx.fillText(`Kills: ${stats.kills}   Damage Dealt: ${Math.floor(stats.damageDealt)}`, W / 2, 305);
-    ctx.fillText(`Highest Combo: ${stats.highestCombo}   Waves Completed: ${stats.wavesCompleted}`, W / 2, 330);
-
-    ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.roundRect(W / 2 - 120, 368, 240, 52, 10); ctx.fill();
-    ctx.fillStyle = '#000'; ctx.shadowBlur = 0; ctx.font = 'bold 21px Courier New';
-    ctx.fillText('TRY AGAIN', W / 2, 400);
-}
-
-function renderVictory() {
-    ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#ffdd00'; ctx.font = 'bold 50px Courier New'; ctx.textAlign = 'center';
-    ctx.shadowColor = '#fd0'; ctx.shadowBlur = 22;
-    ctx.fillText('YOU SURVIVED!', W / 2, 140);
-    ctx.shadowBlur = 0; ctx.fillStyle = '#0f0'; ctx.font = '20px Courier New';
-    ctx.fillText('The company has filed for bankruptcy.', W / 2, 190);
-    ctx.fillText('You are free. \u{1F389}', W / 2, 220);
-    ctx.fillStyle = '#aaf'; ctx.font = '18px Courier New';
-    ctx.fillText(`Final Level: ${player.level}   Materials: ${player.materials}`, W / 2, 260);
-
-    // Stats display
-    ctx.fillStyle = '#889'; ctx.font = '14px Courier New';
-    ctx.fillText(`Kills: ${stats.kills}   Damage Dealt: ${Math.floor(stats.damageDealt)}`, W / 2, 300);
-    ctx.fillText(`Highest Combo: ${stats.highestCombo}   Waves Completed: ${stats.wavesCompleted}`, W / 2, 325);
-
-    ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.roundRect(W / 2 - 120, 358, 240, 52, 10); ctx.fill();
-    ctx.fillStyle = '#000'; ctx.shadowBlur = 0; ctx.font = 'bold 21px Courier New';
-    ctx.fillText('PLAY AGAIN', W / 2, 390);
-}
+function renderGameOver() { renderResultsScreen(); }
+function renderVictory() { renderResultsScreen(); }
 
 // Fullscreen button (top-right corner)
 function renderFullscreenButton() {
@@ -1796,6 +2248,7 @@ canvas.addEventListener('click', () => {
             const x = startX + col * (cw + gapX);
             const y = startY + row * (ch_h + gapY);
             if (mx >= x && mx <= x + cw && my >= y && my <= y + ch_h) {
+                if (!isCharUnlocked(CHAR_ORDER[idx])) return;
                 startNewGame(CHAR_ORDER[idx]);
                 return;
             }
@@ -1813,8 +2266,9 @@ canvas.addEventListener('click', () => {
         const contX = W - sx - 200;
         if (mx >= contX && mx <= contX + 200 && my >= btnY && my <= btnY + 40) { beginNextWave(); return; }
     } else if (gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) {
-        if (mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= 358 && my <= 420) {
+        if (resultsAnimTimer > 3.0 && mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= H - 70 && my <= H - 22) {
             gameState = STATE.CHAR_SELECT;
+            pendingUnlocks = [];
         }
     }
 });
@@ -1824,7 +2278,7 @@ window.addEventListener('keydown', e => {
 
     // Mute toggle
     if (key === 'm') {
-        if (musicMuted) resumeBGMusic(); else stopBGMusic();
+        if (allMuted) resumeBGMusic(); else stopBGMusic();
     }
 
     // Fullscreen toggle
@@ -1847,7 +2301,7 @@ window.addEventListener('keydown', e => {
 
     if (gameState === STATE.CHAR_SELECT) {
         const num = parseInt(e.key);
-        if (num >= 1 && num <= 6) {
+        if (num >= 1 && num <= 6 && isCharUnlocked(CHAR_ORDER[num - 1])) {
             startNewGame(CHAR_ORDER[num - 1]);
         }
     }
@@ -1861,13 +2315,386 @@ window.addEventListener('keydown', e => {
         else if (e.key === 'Enter') { e.preventDefault(); beginNextWave(); }
     }
 
-    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter') {
+    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter' && resultsAnimTimer > 3.0) {
         gameState = STATE.CHAR_SELECT;
+        pendingUnlocks = [];
     }
 });
 
 // ============================================================
-// 18. GAME LOOP
+// 18. META-PROGRESSION & UNLOCK SYSTEM
+// ============================================================
+const UNLOCK_KEY = 'office_wars_unlocks';
+const unlockState = {
+    totalKills: 0, totalRuns: 0, highestWave: 0, totalMaterials: 0,
+    bossesDefeated: 0, bestRuns: {},
+    unlockedChars: { developer: true, intern: true },
+    unlockedWeapons: { stapler: true, rubberband: true, coffeemug: true },
+    discoveredEvolutions: {},
+};
+let pendingUnlocks = []; // notifications to show
+
+function loadUnlocks() {
+    try {
+        const d = JSON.parse(localStorage.getItem(UNLOCK_KEY));
+        if (d) Object.assign(unlockState, d);
+    } catch(e) {}
+}
+function saveUnlocks() {
+    try { localStorage.setItem(UNLOCK_KEY, JSON.stringify(unlockState)); } catch(e) {}
+}
+loadUnlocks();
+
+const CHAR_UNLOCK_CONDITIONS = {
+    manager:    { desc: 'Reach wave 5', check: () => unlockState.highestWave >= 5 },
+    itadmin:    { desc: 'Reach wave 10', check: () => unlockState.highestWave >= 10 },
+    accountant: { desc: 'Defeat the CFO boss', check: () => unlockState.bossesDefeated >= 1 },
+    hrrep:      { desc: 'Collect 500 total materials', check: () => unlockState.totalMaterials >= 500 },
+};
+const WEAPON_UNLOCK_CONDITIONS = {
+    keyboard:   { desc: 'Reach wave 3', check: () => unlockState.highestWave >= 3 },
+    usb:        { desc: 'Reach wave 7', check: () => unlockState.highestWave >= 7 },
+    laser:      { desc: 'Reach wave 10', check: () => unlockState.highestWave >= 10 },
+    sticky:     { desc: 'Defeat 100 total enemies', check: () => unlockState.totalKills >= 100 },
+    tpsreport:  { desc: 'Defeat any boss', check: () => unlockState.bossesDefeated >= 1 },
+};
+
+function checkUnlocks() {
+    for (const [id, cond] of Object.entries(CHAR_UNLOCK_CONDITIONS)) {
+        if (!unlockState.unlockedChars[id] && cond.check()) {
+            unlockState.unlockedChars[id] = true;
+            pendingUnlocks.push({ type: 'character', name: CHARACTERS[id].name, emoji: CHARACTERS[id].emoji });
+        }
+    }
+    for (const [id, cond] of Object.entries(WEAPON_UNLOCK_CONDITIONS)) {
+        if (!unlockState.unlockedWeapons[id] && cond.check()) {
+            unlockState.unlockedWeapons[id] = true;
+            pendingUnlocks.push({ type: 'weapon', name: WEAPONS[id].name, emoji: WEAPONS[id].emoji });
+        }
+    }
+    saveUnlocks();
+}
+
+function updateMetaProgress() {
+    unlockState.totalKills += stats.kills;
+    unlockState.totalRuns++;
+    unlockState.totalMaterials += player.materials;
+    if (wave > unlockState.highestWave) unlockState.highestWave = wave;
+    const charId = selectedChar ? selectedChar.id : 'developer';
+    if (!unlockState.bestRuns[charId] || wave > unlockState.bestRuns[charId]) {
+        unlockState.bestRuns[charId] = wave;
+    }
+    checkUnlocks();
+}
+
+function isCharUnlocked(charId) {
+    return unlockState.unlockedChars[charId] || false;
+}
+function isWeaponUnlocked(weaponId) {
+    return unlockState.unlockedWeapons[weaponId] || false;
+}
+
+// ============================================================
+// 19. RELIC SYSTEM
+// ============================================================
+const MAX_RELICS = 8;
+const RELIC_DEFS = [
+    { id: 'ergo_chair',     name: 'Ergonomic Chair',            emoji: '\u{1FA91}', desc: '+15% move speed',                     cost: 4, apply: p => { p.stats.speed *= 1.15; } },
+    { id: 'headphones',     name: 'Noise-Cancelling Headphones',emoji: '\u{1F3A7}', desc: '-20% ranged damage taken',            cost: 5, apply: p => { p.rangedDmgMult = (p.rangedDmgMult || 1) * 0.8; } },
+    { id: 'standing_desk',  name: 'Standing Desk',              emoji: '\u{1F9D1}\u200D\u{1F4BB}', desc: '+10% dmg, +5% speed',  cost: 5, apply: p => { p.stats.damage *= 1.1; p.stats.speed *= 1.05; } },
+    { id: 'extra_monitor',  name: 'Extra Monitor',              emoji: '\u{1F5A5}\uFE0F', desc: '+1 weapon slot (max 7)',         cost: 7, apply: p => { p.maxWeapons = (p.maxWeapons || 6) + 1; } },
+    { id: 'company_card',   name: 'Company Card',               emoji: '\u{1F4B3}', desc: '10% chance free purchase',            cost: 4, apply: p => { p.freeChance = (p.freeChance || 0) + 0.1; } },
+    { id: 'motiv_poster',   name: 'Motivational Poster',        emoji: '\u{1F5BC}\uFE0F', desc: '+5% dmg per combo level',       cost: 5, apply: p => { p.comboDmgBonus = (p.comboDmgBonus || 0) + 0.05; } },
+    { id: 'fidget_spinner', name: 'Fidget Spinner',             emoji: '\u{1F300}', desc: '+10% fire rate',                      cost: 4, apply: p => { p.stats.atkSpd *= 1.1; } },
+    { id: 'stress_ball',    name: 'Stress Ball',                emoji: '\u{1F3BE}', desc: 'Regen 1 HP/10s',                      cost: 3, apply: p => { p.stats.regen += 0.1; } },
+    { id: 'swivel_chair',   name: 'Swivel Chair',               emoji: '\u{1FA91}', desc: '+25% dash distance',                  cost: 4, apply: p => { p.dashDistMult = (p.dashDistMult || 1) * 1.25; } },
+    { id: 'coffee_iv',      name: 'Coffee IV Drip',             emoji: '\u2615',    desc: '+20% fire rate, -10% max HP',         cost: 4, apply: p => { p.stats.atkSpd *= 1.2; p.maxHp = Math.floor(p.maxHp * 0.9); p.hp = Math.min(p.hp, p.maxHp); } },
+    { id: 'badge_lanyard',  name: 'Badge Lanyard',              emoji: '\u{1F3F7}\uFE0F', desc: '+15% material drops',           cost: 4, apply: p => { p.matDropMult = (p.matDropMult || 1) * 1.15; } },
+    { id: 'whiteboard',     name: 'Whiteboard Marker',          emoji: '\u{1F58D}\uFE0F', desc: '+10% AOE radius',               cost: 4, apply: p => { p.aoeMult = (p.aoeMult || 1) * 1.1; } },
+    { id: 'pocket_protector',name:'Pocket Protector',            emoji: '\u{1F455}', desc: '+15 armor',                          cost: 6, apply: p => { p.stats.armor += 15; } },
+    { id: 'vpn_token',      name: 'VPN Token',                  emoji: '\u{1F510}', desc: '10% dodge chance',                    cost: 6, apply: p => { p.dodgeChance = (p.dodgeChance || 0) + 0.1; } },
+    { id: 'mandatory_fun',  name: 'Mandatory Fun Sign',         emoji: '\u{1F389}', desc: '+1% dmg per wave survived',           cost: 3, apply: p => { p.waveDmgBonus = (p.waveDmgBonus || 0) + 0.01; } },
+];
+
+let playerRelics = [];
+
+function getRelicShopOptions() {
+    if (playerRelics.length >= MAX_RELICS) return [];
+    const ownedIds = new Set(playerRelics.map(r => r.id));
+    const available = RELIC_DEFS.filter(r => !ownedIds.has(r.id));
+    if (available.length === 0) return [];
+    const priceScale = 1 + (wave - 1) * 0.15;
+    const chosen = shuffle(available).slice(0, 1);
+    return chosen.map(r => ({
+        ...r, cost: Math.ceil(r.cost * priceScale), cat: 'relic',
+        apply: (p) => { r.apply(p); playerRelics.push(r); },
+    }));
+}
+
+// ============================================================
+// 20. ELITE ENEMY SYSTEM
+// ============================================================
+function makeElite(e) {
+    e.isElite = true;
+    e.maxHp *= 3; e.hp = e.maxHp;
+    e.dmg = Math.round(e.dmg * 1.5);
+    e.contactDps *= 1.5;
+    e.mat *= 3;
+    e.xp *= 2;
+}
+
+function getEliteBehavior(e) {
+    // Returns special behavior function for elite enemies, called on death or during AI
+    return null; // Behaviors handled inline in enemyDie and updateEnemyAI
+}
+
+// ============================================================
+// 21. ADAPTIVE DIFFICULTY
+// ============================================================
+let adaptiveHistory = [];  // HP% at end of each wave
+let adaptiveSpawnMod = 1.0;
+let adaptiveDmgMod = 1.0;
+
+function updateAdaptive() {
+    if (wave % 5 === 0) { // Reset at boss waves
+        adaptiveSpawnMod = 1.0;
+        adaptiveDmgMod = 1.0;
+        return;
+    }
+    const hpPct = player.hp / player.maxHp;
+    adaptiveHistory.push(hpPct);
+    if (adaptiveHistory.length >= 3) {
+        const last3 = adaptiveHistory.slice(-3);
+        if (last3.every(h => h < 0.3)) {
+            adaptiveSpawnMod = Math.max(0.8, adaptiveSpawnMod - 0.1);
+            adaptiveDmgMod = Math.max(0.8, adaptiveDmgMod - 0.05);
+        } else if (last3.every(h => h > 0.8)) {
+            adaptiveSpawnMod = Math.min(1.2, adaptiveSpawnMod + 0.1);
+        }
+    }
+}
+
+// ============================================================
+// 22. ENHANCED COMBO DISPLAY
+// ============================================================
+let comboMilestoneText = '';
+let comboMilestoneTimer = 0;
+
+function checkComboMilestone() {
+    if (comboCount === 5) { comboMilestoneText = 'COMBO x5!'; comboMilestoneTimer = 1.5; }
+    else if (comboCount === 10) { comboMilestoneText = 'COMBO x10!'; comboMilestoneTimer = 1.5; }
+    else if (comboCount === 15) { comboMilestoneText = 'UNSTOPPABLE!'; comboMilestoneTimer = 2.0; }
+    else if (comboCount === 20) { comboMilestoneText = 'OFFICE LEGEND!'; comboMilestoneTimer = 2.5; }
+}
+
+function getComboMatBonus() {
+    const level = comboCount >= 10 ? 5 : comboCount >= 5 ? Math.floor(comboCount / 2) : 0;
+    return Math.min(level * 0.05, 0.25); // +5% per combo level, capped at +25%
+}
+
+// ============================================================
+// 23. RUN RESULTS SCREEN
+// ============================================================
+let runResults = null;
+let resultsAnimTimer = 0;
+
+function buildRunResults(victory) {
+    // Count kills by type
+    const killsByType = {};
+    // We track total kills but not per-type during the run, so just use total
+    return {
+        victory,
+        wave,
+        totalKills: stats.kills,
+        totalDamage: Math.floor(stats.damageDealt),
+        highestCombo: stats.highestCombo,
+        materialsCollected: player.materials,
+        timeSurvived: 0, // Would need a timer
+        weapons: player.weapons.map(w => ({ name: w.name, emoji: w.emoji, level: w.level })),
+        relics: playerRelics.map(r => ({ name: r.name, emoji: r.emoji })),
+        level: player.level,
+        character: selectedChar ? selectedChar.name : 'Developer',
+        charEmoji: selectedChar ? selectedChar.emoji : '\u{1F9D1}\u200D\u{1F4BB}',
+    };
+}
+
+function renderResultsScreen() {
+    const r = runResults;
+    if (!r) return;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.92)'; ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.textAlign = 'center';
+    if (r.victory) {
+        ctx.fillStyle = '#ffdd00'; ctx.font = 'bold 42px Courier New';
+        ctx.shadowColor = '#fd0'; ctx.shadowBlur = 20;
+        ctx.fillText('ESCAPED THE OFFICE!', W / 2, 60);
+    } else {
+        ctx.fillStyle = '#ff3333'; ctx.font = 'bold 42px Courier New';
+        ctx.shadowColor = '#f00'; ctx.shadowBlur = 20;
+        ctx.fillText(`TERMINATED \u2014 Wave ${r.wave}`, W / 2, 60);
+    }
+    ctx.shadowBlur = 0;
+
+    // Character
+    ctx.fillStyle = '#aaa'; ctx.font = '16px Courier New';
+    ctx.fillText(`${r.charEmoji} ${r.character}  \u2022  Level ${r.level}`, W / 2, 95);
+
+    // Animated stats
+    const elapsed = resultsAnimTimer;
+    const stats_list = [
+        { label: 'Wave Reached', value: r.wave, delay: 0 },
+        { label: 'Total Kills', value: r.totalKills, delay: 0.4 },
+        { label: 'Damage Dealt', value: r.totalDamage, delay: 0.8 },
+        { label: 'Highest Combo', value: r.highestCombo, delay: 1.2 },
+        { label: 'Materials', value: r.materialsCollected, delay: 1.6 },
+    ];
+
+    let y = 130;
+    for (const s of stats_list) {
+        if (elapsed < s.delay) continue;
+        const progress = clamp((elapsed - s.delay) / 0.3, 0, 1);
+        const displayVal = Math.floor(s.value * progress);
+        ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(s.label, W / 2 - 120, y);
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'right';
+        ctx.fillText(displayVal.toString(), W / 2 + 120, y);
+        y += 26;
+    }
+
+    // Weapons
+    if (elapsed > 2.0 && r.weapons.length > 0) {
+        y += 10;
+        ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText('Loadout:', W / 2, y); y += 22;
+        ctx.font = '20px serif';
+        const ww = r.weapons.length * 36;
+        r.weapons.forEach((w, i) => {
+            ctx.fillText(w.emoji, W / 2 - ww / 2 + i * 36 + 18, y);
+        });
+        y += 30;
+    }
+
+    // Relics
+    if (elapsed > 2.4 && r.relics.length > 0) {
+        ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText('Relics:', W / 2, y); y += 22;
+        ctx.font = '18px serif';
+        const rw = r.relics.length * 32;
+        r.relics.forEach((rl, i) => {
+            ctx.fillText(rl.emoji, W / 2 - rw / 2 + i * 32 + 16, y);
+        });
+        y += 30;
+    }
+
+    // Unlock notifications
+    if (elapsed > 2.8 && pendingUnlocks.length > 0) {
+        ctx.fillStyle = '#fd0'; ctx.font = 'bold 16px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText('UNLOCKED!', W / 2, y + 10); y += 28;
+        ctx.font = '14px Courier New'; ctx.fillStyle = '#aaf';
+        for (const u of pendingUnlocks) {
+            ctx.fillText(`${u.emoji} ${u.name} (${u.type})`, W / 2, y);
+            y += 22;
+        }
+    }
+
+    // Buttons
+    if (elapsed > 3.0) {
+        ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
+        ctx.beginPath(); ctx.roundRect(W / 2 - 120, H - 70, 240, 48, 10); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.shadowBlur = 0; ctx.font = 'bold 18px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText('PLAY AGAIN', W / 2, H - 40);
+    }
+}
+
+// ============================================================
+// 24. ACCESSIBILITY OPTIONS
+// ============================================================
+const ACCESS_KEY = 'office_wars_accessibility';
+let accessSettings = {
+    screenShake: true,
+    flashEffects: true,
+    autoAim: 'off',       // off, light, full
+    highContrast: false,
+    colorblind: false,
+    reducedMotion: false,
+};
+
+function loadAccessSettings() {
+    try {
+        const d = JSON.parse(localStorage.getItem(ACCESS_KEY));
+        if (d) Object.assign(accessSettings, d);
+        applyAccessSettings();
+    } catch(e) {}
+}
+function saveAccessSettings() {
+    try { localStorage.setItem(ACCESS_KEY, JSON.stringify(accessSettings)); } catch(e) {}
+}
+function applyAccessSettings() {
+    SCREEN_SHAKE_ENABLED = accessSettings.screenShake;
+    FLASH_EFFECTS_ENABLED = accessSettings.flashEffects;
+}
+loadAccessSettings();
+
+// ============================================================
+// 25. WEAPON EVOLUTION SYSTEM
+// ============================================================
+const EVOLUTION_RECIPES = [
+    { primary: 'stapler', secondary: 'keyboard', result: {
+        id: 'staple_gun', name: 'Staple Gun', emoji: '\u{1F52B}', color: '#ff8800',
+        baseDmg: 45, baseRate: 2.5, range: 260, projSpeed: 500, type: 'ranged', pierce: 1,
+        burstCount: 3, burstSpread: 0.12, evolved: true,
+    }},
+    { primary: 'rubberband', secondary: 'usb', result: {
+        id: 'slingshot_drone', name: 'Slingshot Drone', emoji: '\u{1F6F8}', color: '#ffff00',
+        baseDmg: 12, baseRate: 6, range: 120, type: 'orbital', orbitR: 90, orbitSpd: 2.8, evolved: true,
+    }},
+    { primary: 'coffeemug', secondary: 'sticky', result: {
+        id: 'espresso_bomb', name: 'Espresso Bomb', emoji: '\u2615', color: '#8B2500',
+        baseDmg: 55, baseRate: 0.6, range: 240, projSpeed: 220, aoe: 110, type: 'ranged',
+        slow: 0.3, dotDps: 8, dotDur: 4, evolved: true,
+    }},
+    { primary: 'laser', secondary: 'tpsreport', result: {
+        id: 'projector_beam', name: 'Projector Beam', emoji: '\u{1F4FD}\uFE0F', color: '#ff0044',
+        baseDmg: 18, baseRate: 8, range: 300, projSpeed: 900, pierce: 5, type: 'ranged', evolved: true,
+    }},
+];
+
+let pendingEvolution = null;
+
+function checkEvolutions() {
+    for (const recipe of EVOLUTION_RECIPES) {
+        const primary = player.weapons.find(w => w.id === recipe.primary && w.level >= 3);
+        const secondary = player.weapons.find(w => w.id === recipe.secondary);
+        if (primary && secondary) {
+            pendingEvolution = recipe;
+            return;
+        }
+    }
+    pendingEvolution = null;
+}
+
+function applyEvolution(recipe) {
+    const pi = player.weapons.findIndex(w => w.id === recipe.primary);
+    const si = player.weapons.findIndex(w => w.id === recipe.secondary);
+    if (pi === -1 || si === -1) return;
+    player.weapons[pi] = { ...recipe.result, level: 3 };
+    player.weapons.splice(si, 1);
+    // Rebuild weapon timers
+    player.weaponTimers = {};
+    player.weapons.forEach((_, i) => { player.weaponTimers[i] = 0; });
+    addFloating(player.x, player.y - 30, `${recipe.result.emoji} ${recipe.result.name}!`, '#fd0');
+    if (!unlockState.discoveredEvolutions[recipe.result.id]) {
+        unlockState.discoveredEvolutions[recipe.result.id] = true;
+        pendingUnlocks.push({ type: 'evolution', name: recipe.result.name, emoji: recipe.result.emoji });
+        saveUnlocks();
+    }
+    pendingEvolution = null;
+}
+
+// ============================================================
+// 26. GAME LOOP
 // ============================================================
 let lastTime = 0;
 function loop(timestamp) {
