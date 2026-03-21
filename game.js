@@ -307,7 +307,7 @@ function scheduleMusicLoop() {
 // ============================================================
 // 5. GAME STATE, CHARACTERS, OBSTACLES
 // ============================================================
-const STATE = { MENU: 'menu', CHAR_SELECT: 'char_select', PLAYING: 'playing', WAVE_END: 'wave_end', SHOP: 'shop', GAME_OVER: 'game_over', VICTORY: 'victory' };
+const STATE = { MENU: 'menu', CHAR_SELECT: 'char_select', PLAYING: 'playing', WAVE_END: 'wave_end', SHOP: 'shop', GAME_OVER: 'game_over', VICTORY: 'victory', PAUSED: 'paused' };
 let gameState = STATE.MENU;
 let wave = 0;
 const MAX_WAVES = 20;
@@ -327,6 +327,9 @@ let magnetTimer = 0;
 
 // Gameplay stats
 const stats = { kills: 0, damageDealt: 0, highestCombo: 0, wavesCompleted: 0 };
+let runStartTime = 0;
+let runElapsedTime = 0; // seconds elapsed during gameplay
+let pausedFromState = null; // which state we paused from
 function resetStats() { stats.kills = 0; stats.damageDealt = 0; stats.highestCombo = 0; stats.wavesCompleted = 0; }
 
 // Selected character
@@ -519,7 +522,8 @@ function createPlayer(charId) {
             armor: ch.armor,
             regen: 0,
             lifesteal: ch.lifesteal,
-            luck: ch.luck
+            luck: ch.luck,
+            pickupRadius: 1.0
         },
         weapons: [{ ...WEAPONS[ch.startWeapon], level: 1 }],
         weaponTimers: { 0: 0 },
@@ -682,17 +686,21 @@ function updatePlayer(dt) {
         if (player.regenTimer <= 0) { playerHeal(player.stats.regen); player.regenTimer = 1; }
     }
 
-    // Auto-collect XP orbs
+    // Auto-collect XP orbs (scaled by pickupRadius)
+    const pr = player.stats.pickupRadius;
+    const collectDist = 50 * pr;
+    const magnetDist = 160 * pr;
     for (let i = xpOrbs.length - 1; i >= 0; i--) {
         const o = xpOrbs[i];
         const d = dist(player, o);
-        if (d < 50) { addXPSparkle(o.x, o.y); sfxXPPickup(); playerGainXP(o.v); xpOrbs.splice(i, 1); }
-        else if (d < 160) { const n = norm(o.x - player.x, o.y - player.y); o.x -= n.x * 260 * dt; o.y -= n.y * 260 * dt; }
+        if (d < collectDist) { addXPSparkle(o.x, o.y); sfxXPPickup(); playerGainXP(o.v); xpOrbs.splice(i, 1); }
+        else if (d < magnetDist) { const n = norm(o.x - player.x, o.y - player.y); o.x -= n.x * 260 * dt; o.y -= n.y * 260 * dt; }
     }
-    // Auto-collect materials
+    // Auto-collect materials (scaled by pickupRadius)
+    const matCollectDist = 44 * pr;
     for (let i = matDrops.length - 1; i >= 0; i--) {
         const m = matDrops[i];
-        if (dist(player, m) < 44) {
+        if (dist(player, m) < matCollectDist) {
             const total = m.v + Math.floor(player.stats.luck);
             player.materials += total;
             addFloating(m.x, m.y, `+$${total}`, '#fd0');
@@ -744,7 +752,8 @@ function updateWeapons(dt) {
             if (player.weaponTimers[i] <= 0) {
                 const range = playerEffectiveRange(w);
                 let hit = false;
-                for (const e of enemies) {
+                const meleeTargets = getNearbyEnemies(player.x, player.y, range + 60);
+                for (const e of meleeTargets) {
                     if (dist(player, e) < range + e.radius) {
                         enemyTakeDamage(e, playerEffectiveDmg(w));
                         const n = norm(e.x - player.x, e.y - player.y);
@@ -764,7 +773,8 @@ function updateWeapons(dt) {
         if (player.weaponTimers[i] <= 0) {
             const range = playerEffectiveRange(w);
             let nearest = null, nd = Infinity;
-            for (const e of enemies) { const d = dist(player, e); if (d < range + e.radius && d < nd) { nd = d; nearest = e; } }
+            const candidates = getNearbyEnemies(player.x, player.y, range + 60);
+            for (const e of candidates) { const d = dist(player, e); if (d < range + e.radius && d < nd) { nd = d; nearest = e; } }
             if (nearest) {
                 fireWeapon(w, nearest);
                 player.weaponTimers[i] = cooldown;
@@ -1046,7 +1056,8 @@ function updateBullets(dt) {
             }
         }
         if (!b.dead) {
-            for (const e of enemies) {
+            const nearby = getNearbyEnemies(b.x, b.y, b.radius + 60);
+            for (const e of nearby) {
                 if (b.hitSet.has(e) || e.dead) continue;
                 if (dist(b, e) < b.radius + e.radius) {
                     b.hitSet.add(e);
@@ -1079,7 +1090,8 @@ function updateBullets(dt) {
 
 function explodeBullet(b) {
     const aoe = b.weapon.aoe;
-    for (const e of enemies) { if (!e.dead && dist(b, e) < aoe + e.radius) enemyTakeDamage(e, b.dmg); }
+    const nearby = getNearbyEnemies(b.x, b.y, aoe + 60);
+    for (const e of nearby) { if (!e.dead && dist(b, e) < aoe + e.radius) enemyTakeDamage(e, b.dmg); }
     particles.push({ type: 'aoe', x: b.x, y: b.y, maxR: aoe, r: 0, color: b.weapon.color, t: 0.5 });
 }
 
@@ -1236,6 +1248,7 @@ const UPGRADE_POOL = [
     { id: 'lifesteal_up',name: 'Vampire Energy Drink', emoji: '\u{1F9DB}',  desc: '+6% lifesteal from attacks',    cost: 5, cat: 'stat', apply: p => { p.stats.lifesteal += 0.06; } },
     { id: 'regen_up',    name: 'Desk Snacks',          emoji: '\u{1F36A}',  desc: 'Regen 3 HP/sec',                cost: 5, cat: 'stat', apply: p => { p.stats.regen += 3; } },
     { id: 'heal',        name: 'First Aid Kit',        emoji: '\u{1FA79}',  desc: 'Restore 50 HP right now',      cost: 2, cat: 'stat', apply: p => { playerHeal(50); } },
+    { id: 'pickup_up',   name: 'Long Arms',            emoji: '\u{1F9B6}',  desc: '+35% pickup radius',            cost: 3, cat: 'stat', apply: p => { p.stats.pickupRadius *= 1.35; } },
     // New weapons
     { id: 'w_rubberband',name: 'Rubber Band',          emoji: '\u{1F517}',  desc: 'New: Rapid-fire rubber bands',  cost: 5, cat: 'weapon', weaponId: 'rubberband', apply: p => { p.weapons.push({ ...WEAPONS.rubberband, level: 1 }); } },
     { id: 'w_coffeemug', name: 'Coffee Mug',           emoji: '\u2615',  desc: 'New: AOE thrown coffee mug',    cost: 6, cat: 'weapon', weaponId: 'coffeemug',  apply: p => { p.weapons.push({ ...WEAPONS.coffeemug, level: 1 }); } },
@@ -1365,11 +1378,13 @@ function setGameState(s) {
         updateMetaProgress();
         runResults = buildRunResults(false);
         resultsAnimTimer = 0;
+        deleteSave(); // Run ended, no save to continue
     }
     if (s === STATE.VICTORY) {
         updateMetaProgress();
         runResults = buildRunResults(true);
         resultsAnimTimer = 0;
+        deleteSave(); // Run ended, no save to continue
     }
 }
 
@@ -1388,6 +1403,8 @@ function startNewGame(charId) {
     adaptiveHistory = []; adaptiveSpawnMod = 1.0; adaptiveDmgMod = 1.0;
     currentEnvName = '';
     resetStats();
+    runStartTime = performance.now();
+    runElapsedTime = 0;
     wave = 1;
     setGameState(STATE.PLAYING);
     startWave();
@@ -1405,7 +1422,10 @@ function update(dt) {
         resultsAnimTimer += dt;
     }
 
+    if (gameState === STATE.PAUSED) return; // Skip all updates while paused
+
     if (gameState === STATE.PLAYING) {
+        runElapsedTime += dt;
         // Spawn from queue
         spawnTimer -= dt;
         if (spawnTimer <= 0 && spawnQueue.length > 0) {
@@ -1427,6 +1447,7 @@ function update(dt) {
         }
         updatePlayer(dt);
         updateEnemies(dt);
+        buildEnemyGrid(); // Build spatial grid once per frame for fast collision lookups
         updateBullets(dt);
 
         // Wave announcement timer
@@ -1489,7 +1510,7 @@ function render() {
     else if (gameState === STATE.CHAR_SELECT) renderCharSelect();
     else {
         renderArena();
-        if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END) {
+        if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END || gameState === STATE.PAUSED) {
             renderPickupsAndParticles();
             renderBullets();
             renderEnemies();
@@ -1511,6 +1532,7 @@ function render() {
         if (gameState === STATE.SHOP) renderShop();
         if (gameState === STATE.GAME_OVER) renderGameOver();
         if (gameState === STATE.VICTORY) renderVictory();
+        if (gameState === STATE.PAUSED) renderPauseMenu();
     }
 
     ctx.restore();
@@ -2002,6 +2024,11 @@ function renderShop() {
         ctx.fillText(`\u{1F4B0} ${u.cost}`, x + cw / 2, y + ch - 20);
         ctx.fillStyle = '#334'; ctx.font = '11px Courier New';
         ctx.fillText(`[${i + 1}]`, x + cw / 2, y + ch - 6);
+
+        // Weapon comparison tooltip on hover
+        if (hover && u && u.cat === 'weapon' && u.weaponId) {
+            renderWeaponComparison(u, x, y + ch);
+        }
     }
 
     // Bottom button row
@@ -2028,7 +2055,7 @@ function renderShop() {
     const statY = btnY + 58;
     ctx.fillStyle = '#445'; ctx.font = '11px Courier New'; ctx.textAlign = 'center';
     ctx.fillText(
-        `\u2764 ${Math.ceil(player.hp)}/${player.maxHp}  \u{1F3C3} ${player.stats.speed.toFixed(2)}x  \u2694 ${player.stats.damage.toFixed(2)}x  \u26A1 ${player.stats.atkSpd.toFixed(2)}x  \u{1F6E1} ${player.stats.armor}  \u267B ${player.stats.regen}/s`,
+        `\u2764 ${Math.ceil(player.hp)}/${player.maxHp}  \u{1F3C3} ${player.stats.speed.toFixed(2)}x  \u2694 ${player.stats.damage.toFixed(2)}x  \u26A1 ${player.stats.atkSpd.toFixed(2)}x  \u{1F6E1} ${player.stats.armor}  \u267B ${player.stats.regen}/s  \u{1F9F2} ${player.stats.pickupRadius.toFixed(1)}x`,
         W / 2, statY
     );
     ctx.fillStyle = '#336'; ctx.font = '11px Courier New';
@@ -2052,15 +2079,33 @@ function renderMenu() {
     ctx.shadowBlur = 0; ctx.fillStyle = '#556'; ctx.font = '15px Courier New';
     ctx.fillText('WASD or hold \u{1F5B1} Left Mouse to move  \u2022  Weapons auto-fire', W / 2, 244);
     ctx.fillText('Collect \u{1F4B0} between waves for upgrades  \u2022  [M] mute music', W / 2, 266);
-    ctx.fillText('[Space] dash  \u2022  [F] fullscreen', W / 2, 288);
+    ctx.fillText('[Space] dash  \u2022  [F] fullscreen  \u2022  [Esc/P] pause', W / 2, 288);
+
+    // Continue button (if save exists)
+    const hasSave = hasSavedGame();
+    if (hasSave) {
+        const contPulse = 0.85 + Math.sin(Date.now() * 0.004) * 0.15;
+        ctx.fillStyle = `rgba(68, 255, 136, ${contPulse})`;
+        ctx.shadowColor = '#4f8'; ctx.shadowBlur = 14;
+        ctx.beginPath(); ctx.roundRect(W / 2 - 115, 310, 230, 48, 12); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.font = 'bold 20px Courier New'; ctx.shadowBlur = 0;
+        ctx.fillText('\u{1F4BE} CONTINUE', W / 2, 340);
+    }
 
     // Play button
+    const playY = hasSave ? 372 : 320;
     const pulse = 0.85 + Math.sin(Date.now() * 0.003) * 0.15;
     ctx.fillStyle = `rgba(0, 170, 255, ${pulse})`;
     ctx.shadowColor = '#0af'; ctx.shadowBlur = 14;
-    ctx.beginPath(); ctx.roundRect(W / 2 - 115, 320, 230, 56, 12); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(W / 2 - 115, playY, 230, 56, 12); ctx.fill();
     ctx.fillStyle = '#000'; ctx.font = 'bold 22px Courier New'; ctx.shadowBlur = 0;
-    ctx.fillText('\u23F1 CLOCK IN', W / 2, 354);
+    ctx.fillText('\u23F1 CLOCK IN', W / 2, playY + 34);
+
+    // Continue/new game keyboard hints
+    if (hasSave) {
+        ctx.fillStyle = '#556'; ctx.font = '11px Courier New';
+        ctx.fillText('[Enter] continue  \u2022  [Space] new game', W / 2, playY + 58);
+    }
 
     // Enemy showcase
     const showcase = ['\u{1F9D1}\u200D\u{1F4BC}','\u{1F624}','\u{1F5A8}\uFE0F','\u{1F4CB}','\u{1F4BB}','\u{1F9EE}','\u{1F4B0}','\u{1F451}'];
@@ -2233,8 +2278,17 @@ canvas.addEventListener('click', () => {
     if (isFullscreenBtnHit(mx, my)) { toggleFullscreen(); return; }
 
     if (gameState === STATE.MENU) {
-        if (mx >= W / 2 - 115 && mx <= W / 2 + 115 && my >= 320 && my <= 376) {
-            getAC(); // init audio on user gesture
+        const hasSave = hasSavedGame();
+        // Continue button
+        if (hasSave && mx >= W / 2 - 115 && mx <= W / 2 + 115 && my >= 310 && my <= 358) {
+            getAC();
+            if (loadGame()) return;
+        }
+        // Play button (shifts down when save exists)
+        const playY = hasSave ? 372 : 320;
+        if (mx >= W / 2 - 115 && mx <= W / 2 + 115 && my >= playY && my <= playY + 56) {
+            getAC();
+            if (hasSave) deleteSave(); // Starting new game overwrites save
             gameState = STATE.CHAR_SELECT;
         }
     } else if (gameState === STATE.CHAR_SELECT) {
@@ -2265,8 +2319,26 @@ canvas.addEventListener('click', () => {
         if (mx >= sx && mx <= sx + 180 && my >= btnY && my <= btnY + 40) { rerollShop(); return; }
         const contX = W - sx - 200;
         if (mx >= contX && mx <= contX + 200 && my >= btnY && my <= btnY + 40) { beginNextWave(); return; }
+    } else if (gameState === STATE.PAUSED) {
+        const btnW = 220, btnH = 38, btnGap = 12;
+        const btnX = W / 2 - btnW / 2;
+        const resumeBtnY = H - 105;
+        const saveBtnY = resumeBtnY + btnH + btnGap;
+        // Resume button
+        if (mx >= btnX && mx <= btnX + btnW && my >= resumeBtnY && my <= resumeBtnY + btnH) {
+            gameState = pausedFromState;
+            pausedFromState = null;
+        }
+        // Save & Quit button
+        if (mx >= btnX && mx <= btnX + btnW && my >= saveBtnY && my <= saveBtnY + btnH) {
+            if (saveGame()) {
+                gameState = STATE.MENU;
+                pausedFromState = null;
+                stopBGMusic();
+            }
+        }
     } else if (gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) {
-        if (resultsAnimTimer > 3.0 && mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= H - 70 && my <= H - 22) {
+        if (resultsAnimTimer > 3.4 && mx >= W / 2 - 120 && mx <= W / 2 + 120 && my >= H - 70 && my <= H - 22) {
             gameState = STATE.CHAR_SELECT;
             pendingUnlocks = [];
         }
@@ -2275,6 +2347,30 @@ canvas.addEventListener('click', () => {
 
 window.addEventListener('keydown', e => {
     const key = e.key.toLowerCase();
+
+    // Pause toggle (Escape or P)
+    if (key === 'escape' || key === 'p') {
+        if (gameState === STATE.PAUSED) {
+            gameState = pausedFromState;
+            pausedFromState = null;
+            return;
+        } else if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END) {
+            pausedFromState = gameState;
+            gameState = STATE.PAUSED;
+            return;
+        }
+    }
+
+    // Save & Quit (Q while paused)
+    if (key === 'q' && gameState === STATE.PAUSED) {
+        if (saveGame()) {
+            addFloating(W / 2, H / 2, 'GAME SAVED!', '#0f0');
+            gameState = STATE.MENU;
+            pausedFromState = null;
+            stopBGMusic();
+        }
+        return;
+    }
 
     // Mute toggle
     if (key === 'm') {
@@ -2296,7 +2392,13 @@ window.addEventListener('keydown', e => {
     if (gameState === STATE.MENU && (e.key === 'Enter' || e.key === ' ')) {
         e.preventDefault();
         getAC();
-        gameState = STATE.CHAR_SELECT;
+        // Enter continues saved game if available, Space starts new
+        if (e.key === 'Enter' && hasSavedGame()) {
+            loadGame();
+        } else {
+            if (hasSavedGame()) deleteSave();
+            gameState = STATE.CHAR_SELECT;
+        }
     }
 
     if (gameState === STATE.CHAR_SELECT) {
@@ -2315,7 +2417,7 @@ window.addEventListener('keydown', e => {
         else if (e.key === 'Enter') { e.preventDefault(); beginNextWave(); }
     }
 
-    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter' && resultsAnimTimer > 3.0) {
+    if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && e.key === 'Enter' && resultsAnimTimer > 3.4) {
         gameState = STATE.CHAR_SELECT;
         pendingUnlocks = [];
     }
@@ -2509,7 +2611,7 @@ function buildRunResults(victory) {
         totalDamage: Math.floor(stats.damageDealt),
         highestCombo: stats.highestCombo,
         materialsCollected: player.materials,
-        timeSurvived: 0, // Would need a timer
+        timeSurvived: runElapsedTime,
         weapons: player.weapons.map(w => ({ name: w.name, emoji: w.emoji, level: w.level })),
         relics: playerRelics.map(r => ({ name: r.name, emoji: r.emoji })),
         level: player.level,
@@ -2548,23 +2650,25 @@ function renderResultsScreen() {
         { label: 'Total Kills', value: r.totalKills, delay: 0.4 },
         { label: 'Damage Dealt', value: r.totalDamage, delay: 0.8 },
         { label: 'Highest Combo', value: r.highestCombo, delay: 1.2 },
-        { label: 'Materials', value: r.materialsCollected, delay: 1.6 },
+        { label: 'Time Survived', value: r.timeSurvived, delay: 1.6, format: 'time' },
+        { label: 'Materials', value: r.materialsCollected, delay: 2.0 },
     ];
 
     let y = 130;
     for (const s of stats_list) {
         if (elapsed < s.delay) continue;
         const progress = clamp((elapsed - s.delay) / 0.3, 0, 1);
-        const displayVal = Math.floor(s.value * progress);
+        const rawVal = s.value * progress;
+        const displayVal = s.format === 'time' ? formatTime(rawVal) : Math.floor(rawVal).toString();
         ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'left';
         ctx.fillText(s.label, W / 2 - 120, y);
         ctx.fillStyle = '#fff'; ctx.textAlign = 'right';
-        ctx.fillText(displayVal.toString(), W / 2 + 120, y);
+        ctx.fillText(displayVal, W / 2 + 120, y);
         y += 26;
     }
 
     // Weapons
-    if (elapsed > 2.0 && r.weapons.length > 0) {
+    if (elapsed > 2.4 && r.weapons.length > 0) {
         y += 10;
         ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'center';
         ctx.fillText('Loadout:', W / 2, y); y += 22;
@@ -2577,7 +2681,7 @@ function renderResultsScreen() {
     }
 
     // Relics
-    if (elapsed > 2.4 && r.relics.length > 0) {
+    if (elapsed > 2.8 && r.relics.length > 0) {
         ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'center';
         ctx.fillText('Relics:', W / 2, y); y += 22;
         ctx.font = '18px serif';
@@ -2589,7 +2693,7 @@ function renderResultsScreen() {
     }
 
     // Unlock notifications
-    if (elapsed > 2.8 && pendingUnlocks.length > 0) {
+    if (elapsed > 3.2 && pendingUnlocks.length > 0) {
         ctx.fillStyle = '#fd0'; ctx.font = 'bold 16px Courier New'; ctx.textAlign = 'center';
         ctx.fillText('UNLOCKED!', W / 2, y + 10); y += 28;
         ctx.font = '14px Courier New'; ctx.fillStyle = '#aaf';
@@ -2600,7 +2704,7 @@ function renderResultsScreen() {
     }
 
     // Buttons
-    if (elapsed > 3.0) {
+    if (elapsed > 3.4) {
         ctx.fillStyle = '#0af'; ctx.shadowColor = '#0af'; ctx.shadowBlur = 8;
         ctx.beginPath(); ctx.roundRect(W / 2 - 120, H - 70, 240, 48, 10); ctx.fill();
         ctx.fillStyle = '#000'; ctx.shadowBlur = 0; ctx.font = 'bold 18px Courier New'; ctx.textAlign = 'center';
@@ -2691,6 +2795,477 @@ function applyEvolution(recipe) {
         saveUnlocks();
     }
     pendingEvolution = null;
+}
+
+// ============================================================
+// 26a. SPATIAL GRID — Accelerated collision detection
+// ============================================================
+const GRID_CELL = 80; // cell size in pixels
+const GRID_COLS = Math.ceil(W / GRID_CELL);
+const GRID_ROWS = Math.ceil(H / GRID_CELL);
+let spatialGrid = [];
+
+function resetGrid() {
+    spatialGrid = new Array(GRID_COLS * GRID_ROWS);
+    for (let i = 0; i < spatialGrid.length; i++) spatialGrid[i] = [];
+}
+
+function gridKey(x, y) {
+    const col = clamp(Math.floor(x / GRID_CELL), 0, GRID_COLS - 1);
+    const row = clamp(Math.floor(y / GRID_CELL), 0, GRID_ROWS - 1);
+    return row * GRID_COLS + col;
+}
+
+function buildEnemyGrid() {
+    resetGrid();
+    for (const e of enemies) {
+        if (e.dead) continue;
+        const k = gridKey(e.x, e.y);
+        spatialGrid[k].push(e);
+        // Also add to neighboring cells if near border (for radius overlap)
+        const col = Math.floor(e.x / GRID_CELL);
+        const row = Math.floor(e.y / GRID_CELL);
+        const r = e.radius;
+        if (e.x - r < col * GRID_CELL && col > 0) spatialGrid[row * GRID_COLS + (col - 1)].push(e);
+        if (e.x + r > (col + 1) * GRID_CELL && col < GRID_COLS - 1) spatialGrid[row * GRID_COLS + (col + 1)].push(e);
+        if (e.y - r < row * GRID_CELL && row > 0) spatialGrid[(row - 1) * GRID_COLS + col].push(e);
+        if (e.y + r > (row + 1) * GRID_CELL && row < GRID_ROWS - 1) spatialGrid[(row + 1) * GRID_COLS + col].push(e);
+    }
+}
+
+function getNearbyEnemies(x, y, range) {
+    const results = new Set();
+    const minCol = clamp(Math.floor((x - range) / GRID_CELL), 0, GRID_COLS - 1);
+    const maxCol = clamp(Math.floor((x + range) / GRID_CELL), 0, GRID_COLS - 1);
+    const minRow = clamp(Math.floor((y - range) / GRID_CELL), 0, GRID_ROWS - 1);
+    const maxRow = clamp(Math.floor((y + range) / GRID_CELL), 0, GRID_ROWS - 1);
+    for (let r = minRow; r <= maxRow; r++) {
+        for (let c = minCol; c <= maxCol; c++) {
+            for (const e of spatialGrid[r * GRID_COLS + c]) results.add(e);
+        }
+    }
+    return results;
+}
+
+// ============================================================
+// 26a-2. SAVE & RESUME SYSTEM
+// ============================================================
+const SAVE_KEY = 'office_wars_save';
+
+function saveGame() {
+    if (gameState !== STATE.PLAYING && gameState !== STATE.WAVE_END && gameState !== STATE.SHOP && gameState !== STATE.PAUSED) return false;
+
+    const saveData = {
+        version: 2,
+        timestamp: Date.now(),
+
+        // Core state
+        gameState: pausedFromState || gameState,
+        wave,
+        runElapsedTime,
+
+        // Player
+        player: {
+            x: player.x, y: player.y,
+            hp: player.hp, maxHp: player.maxHp,
+            xp: player.xp, xpToNext: player.xpToNext, level: player.level,
+            materials: player.materials,
+            stats: { ...player.stats },
+            weapons: player.weapons.map(w => ({
+                id: w.id, name: w.name, emoji: w.emoji, color: w.color,
+                baseDmg: w.baseDmg, baseRate: w.baseRate, range: w.range,
+                projSpeed: w.projSpeed, type: w.type, level: w.level,
+                aoe: w.aoe, pierce: w.pierce, slow: w.slow,
+                dotDps: w.dotDps, dotDur: w.dotDur,
+                orbitR: w.orbitR, orbitSpd: w.orbitSpd,
+                evolved: w.evolved,
+            })),
+            invTimer: 0,
+            dashTimer: player.dashTimer,
+            dashCooldown: player.dashCooldown,
+            facing: player.facing,
+            // Custom properties from relics
+            maxWeapons: player.maxWeapons,
+            freeChance: player.freeChance,
+            comboDmgBonus: player.comboDmgBonus,
+            waveDmgBonus: player.waveDmgBonus,
+            dodgeChance: player.dodgeChance,
+            matDropMult: player.matDropMult,
+            aoeMult: player.aoeMult,
+            dashDistMult: player.dashDistMult,
+            rangedDmgMult: player.rangedDmgMult,
+        },
+
+        // Character
+        charId: selectedChar ? selectedChar.id : 'developer',
+
+        // Stats
+        stats: { ...stats },
+
+        // Combo
+        comboCount,
+        comboTimer,
+
+        // Enemies (save alive enemies)
+        enemies: enemies.filter(e => !e.dead).map(e => ({
+            type: e.type, x: e.x, y: e.y,
+            hp: e.hp, maxHp: e.maxHp,
+            spd: e.spd, dmg: e.dmg, contactDps: e.contactDps,
+            xp: e.xp, mat: e.mat,
+            isElite: e.isElite || false,
+            isBoss: e.isBoss || false,
+            ai: e.ai, aiTimer: e.aiTimer, aiState: e.aiState, phase: e.phase,
+            slowT: e.slowT, slowMult: e.slowMult,
+            dotT: e.dotT, dotDps: e.dotDps,
+        })),
+
+        // Spawn queue
+        spawnQueue: [...spawnQueue],
+        spawnTimer,
+
+        // Drops
+        xpOrbs: xpOrbs.map(o => ({ x: o.x, y: o.y, v: o.v })),
+        matDrops: matDrops.map(m => ({ x: m.x, y: m.y, v: m.v })),
+
+        // Relics
+        relics: playerRelics.map(r => r.id),
+
+        // Adaptive difficulty
+        adaptiveHistory: [...adaptiveHistory],
+        adaptiveSpawnMod,
+        adaptiveDmgMod,
+
+        // Shop state (if in shop)
+        shopOptions: gameState === STATE.SHOP ? shopOptions.map(o => o ? o.id : null) : null,
+        rerollCost,
+        rerollCount,
+    };
+
+    try {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function hasSavedGame() {
+    try {
+        const d = localStorage.getItem(SAVE_KEY);
+        if (!d) return false;
+        const save = JSON.parse(d);
+        return save && save.version >= 2;
+    } catch (e) { return false; }
+}
+
+function deleteSave() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+}
+
+function loadGame() {
+    try {
+        const d = JSON.parse(localStorage.getItem(SAVE_KEY));
+        if (!d || d.version < 2) return false;
+
+        // Restore character
+        const ch = CHARACTERS[d.charId || 'developer'];
+        selectedChar = ch;
+
+        // Create player
+        player = createPlayer(d.charId);
+
+        // Override player state
+        player.x = d.player.x; player.y = d.player.y;
+        player.hp = d.player.hp; player.maxHp = d.player.maxHp;
+        player.xp = d.player.xp; player.xpToNext = d.player.xpToNext; player.level = d.player.level;
+        player.materials = d.player.materials;
+        player.stats = { ...d.player.stats };
+        player.dashTimer = d.player.dashTimer || 0;
+        player.dashCooldown = d.player.dashCooldown || 2.5;
+        player.facing = d.player.facing || 1;
+
+        // Relic-applied custom props
+        if (d.player.maxWeapons) player.maxWeapons = d.player.maxWeapons;
+        if (d.player.freeChance) player.freeChance = d.player.freeChance;
+        if (d.player.comboDmgBonus) player.comboDmgBonus = d.player.comboDmgBonus;
+        if (d.player.waveDmgBonus) player.waveDmgBonus = d.player.waveDmgBonus;
+        if (d.player.dodgeChance) player.dodgeChance = d.player.dodgeChance;
+        if (d.player.matDropMult) player.matDropMult = d.player.matDropMult;
+        if (d.player.aoeMult) player.aoeMult = d.player.aoeMult;
+        if (d.player.dashDistMult) player.dashDistMult = d.player.dashDistMult;
+        if (d.player.rangedDmgMult) player.rangedDmgMult = d.player.rangedDmgMult;
+
+        // Restore weapons
+        player.weapons = d.player.weapons.map(w => ({ ...w }));
+        player.weaponTimers = {};
+        player.weapons.forEach((_, i) => { player.weaponTimers[i] = 0; });
+
+        // Core state
+        wave = d.wave;
+        runElapsedTime = d.runElapsedTime || 0;
+        runStartTime = performance.now() - runElapsedTime * 1000;
+
+        // Stats
+        Object.assign(stats, d.stats);
+
+        // Combo
+        comboCount = d.comboCount || 0;
+        comboTimer = d.comboTimer || 0;
+        comboMilestoneText = ''; comboMilestoneTimer = 0;
+
+        // Enemies
+        enemies = [];
+        for (const ed of (d.enemies || [])) {
+            const def = ENEMY_DEFS[ed.type];
+            if (!def) continue;
+            const e = {
+                ...def,
+                x: ed.x, y: ed.y,
+                hp: ed.hp, maxHp: ed.maxHp,
+                spd: ed.spd, dmg: ed.dmg, contactDps: ed.contactDps,
+                xp: ed.xp, mat: ed.mat,
+                isElite: ed.isElite, isBoss: ed.isBoss,
+                ai: ed.ai, aiTimer: ed.aiTimer, aiState: ed.aiState || 'normal',
+                phase: ed.phase || 1,
+                type: ed.type,
+                kbx: 0, kby: 0, flashT: 0,
+                slowT: ed.slowT || 0, slowMult: ed.slowMult || 1,
+                dotT: ed.dotT || 0, dotDps: ed.dotDps || 0, dotTick: 0,
+                dead: false,
+                animState: 'walk', attackAnimT: 0, deathAnimT: 0,
+            };
+            enemies.push(e);
+        }
+
+        // Spawn queue
+        spawnQueue = d.spawnQueue || [];
+        spawnTimer = d.spawnTimer || 0;
+
+        // Drops
+        bullets = []; enemyBullets = [];
+        xpOrbs = (d.xpOrbs || []).map(o => ({ ...o }));
+        matDrops = (d.matDrops || []).map(m => ({ ...m }));
+
+        // Particles / floaters (start fresh)
+        particles = []; floaters = [];
+        dashAfterimages = [];
+
+        // Relics
+        playerRelics = [];
+        for (const rid of (d.relics || [])) {
+            const rdef = RELIC_DEFS.find(r => r.id === rid);
+            if (rdef) playerRelics.push(rdef);
+        }
+
+        // Adaptive difficulty
+        adaptiveHistory = d.adaptiveHistory || [];
+        adaptiveSpawnMod = d.adaptiveSpawnMod || 1.0;
+        adaptiveDmgMod = d.adaptiveDmgMod || 1.0;
+
+        // Pending evolution / environment
+        pendingEvolution = null;
+        pendingUnlocks = [];
+        runResults = null; resultsAnimTimer = 0;
+        currentEnvName = '';
+
+        // Restore game state
+        const targetState = d.gameState;
+        waveAnnounceTimer = 0;
+        magnetActive = false; magnetTimer = 0;
+
+        if (targetState === STATE.SHOP) {
+            // Regenerate shop options (can't perfectly restore since they have apply functions)
+            shopOptions = generateShopOptions(4);
+            rerollCost = d.rerollCost || 2;
+            rerollCount = d.rerollCount || 0;
+            hoveredCard = -1;
+            gameState = STATE.SHOP;
+        } else {
+            gameState = STATE.PLAYING;
+        }
+
+        // Clear the save after loading
+        deleteSave();
+
+        // Start audio
+        getAC();
+        startBGMusic();
+
+        return true;
+    } catch (e) {
+        console.error('Failed to load save:', e);
+        deleteSave();
+        return false;
+    }
+}
+
+// ============================================================
+// 26b. PAUSE MENU WITH STATS
+// ============================================================
+function calculateDPS() {
+    if (runElapsedTime <= 0) return 0;
+    return stats.damageDealt / runElapsedTime;
+}
+
+function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function renderPauseMenu() {
+    // Darken background
+    ctx.fillStyle = 'rgba(0,0,0,0.82)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 36px Courier New'; ctx.textAlign = 'center';
+    ctx.shadowColor = '#4af'; ctx.shadowBlur = 14;
+    ctx.fillText('PAUSED', W / 2, 70);
+    ctx.shadowBlur = 0;
+
+    // Panel background
+    const px = W / 2 - 200, py = 95, pw = 400, ph = 360;
+    ctx.fillStyle = 'rgba(15,20,50,0.9)';
+    ctx.strokeStyle = '#334488'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 10); ctx.fill(); ctx.stroke();
+
+    // --- Run Stats ---
+    ctx.fillStyle = '#4af'; ctx.font = 'bold 16px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('RUN STATS', W / 2, py + 28);
+
+    const dps = calculateDPS();
+    const statLines = [
+        { label: 'Time Elapsed', value: formatTime(runElapsedTime) },
+        { label: 'Wave', value: `${wave} / ${MAX_WAVES}` },
+        { label: 'Total Damage', value: Math.floor(stats.damageDealt).toLocaleString() },
+        { label: 'DPS', value: dps.toFixed(1) },
+        { label: 'Total Kills', value: stats.kills.toString() },
+        { label: 'Highest Combo', value: stats.highestCombo.toString() },
+        { label: 'Materials', value: player.materials.toString() },
+        { label: 'Level', value: player.level.toString() },
+    ];
+
+    let sy = py + 50;
+    for (const s of statLines) {
+        ctx.fillStyle = '#668'; ctx.font = '13px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(s.label, px + 30, sy);
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'right';
+        ctx.fillText(s.value, px + pw - 30, sy);
+        sy += 22;
+    }
+
+    // --- Player Stats ---
+    sy += 8;
+    ctx.fillStyle = '#4af'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('PLAYER STATS', W / 2, sy); sy += 22;
+
+    const pStats = [
+        { label: 'Damage', value: `${player.stats.damage.toFixed(2)}x` },
+        { label: 'Attack Speed', value: `${player.stats.atkSpd.toFixed(2)}x` },
+        { label: 'Move Speed', value: `${player.stats.speed.toFixed(2)}x` },
+        { label: 'Range', value: `${player.stats.range.toFixed(2)}x` },
+        { label: 'Armor', value: player.stats.armor.toString() },
+        { label: 'Lifesteal', value: `${(player.stats.lifesteal * 100).toFixed(0)}%` },
+        { label: 'Pickup Radius', value: `${player.stats.pickupRadius.toFixed(2)}x` },
+    ];
+
+    for (const s of pStats) {
+        ctx.fillStyle = '#668'; ctx.font = '12px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(s.label, px + 30, sy);
+        ctx.fillStyle = '#aaf'; ctx.textAlign = 'right';
+        ctx.fillText(s.value, px + pw - 30, sy);
+        sy += 18;
+    }
+
+    // --- Weapon DPS ---
+    sy += 8;
+    ctx.fillStyle = '#4af'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('WEAPON DPS', W / 2, sy); sy += 20;
+
+    for (const w of player.weapons) {
+        const wDmg = playerEffectiveDmg(w);
+        const wRate = playerEffectiveRate(w);
+        const wDps = wDmg * wRate;
+        ctx.fillStyle = '#888'; ctx.font = '11px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(`${w.emoji} ${w.name} Lv${w.level}`, px + 30, sy);
+        ctx.fillStyle = '#fd0'; ctx.textAlign = 'right';
+        ctx.fillText(`${wDps.toFixed(1)} DPS`, px + pw - 30, sy);
+        sy += 16;
+    }
+
+    // Buttons
+    const btnW = 220, btnH = 38, btnGap = 12;
+    const btnX = W / 2 - btnW / 2;
+    let btnY = H - 105;
+
+    // Resume button
+    ctx.fillStyle = '#1a3030'; ctx.strokeStyle = '#44aa66'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(btnX, btnY, btnW, btnH, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#44ff88'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('\u25B6 Resume  [Esc/P]', W / 2, btnY + 24);
+
+    btnY += btnH + btnGap;
+
+    // Save & Quit button
+    ctx.fillStyle = '#2a2020'; ctx.strokeStyle = '#aa6644'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(btnX, btnY, btnW, btnH, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffaa66'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('\u{1F4BE} Save & Quit  [Q]', W / 2, btnY + 24);
+}
+
+// ============================================================
+// 26c. WEAPON COMPARISON TOOLTIP IN SHOP
+// ============================================================
+function findWeakestWeapon() {
+    if (player.weapons.length === 0) return null;
+    let weakest = player.weapons[0], weakestDps = playerEffectiveDmg(weakest) * playerEffectiveRate(weakest);
+    for (let i = 1; i < player.weapons.length; i++) {
+        const w = player.weapons[i];
+        const wDps = playerEffectiveDmg(w) * playerEffectiveRate(w);
+        if (wDps < weakestDps) { weakest = w; weakestDps = wDps; }
+    }
+    return { weapon: weakest, dps: weakestDps };
+}
+
+function renderWeaponComparison(shopWeapon, x, y) {
+    const wDef = WEAPONS[shopWeapon.weaponId];
+    if (!wDef) return;
+
+    // Calculate new weapon's DPS at level 1
+    const tempW = { ...wDef, level: 1 };
+    const newDmg = playerEffectiveDmg(tempW);
+    const newRate = playerEffectiveRate(tempW);
+    const newDps = newDmg * newRate;
+
+    const weakest = findWeakestWeapon();
+    if (!weakest) return;
+
+    // Tooltip box
+    const tx = x, ty = y + 4;
+    const tw = 170, th = 72;
+    ctx.fillStyle = 'rgba(10,10,30,0.95)';
+    ctx.strokeStyle = '#4488cc'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(tx, ty, tw, th, 6); ctx.fill(); ctx.stroke();
+
+    ctx.font = '10px Courier New'; ctx.textAlign = 'left';
+
+    // New weapon
+    ctx.fillStyle = '#88ccff';
+    ctx.fillText(`${wDef.emoji} ${wDef.name}`, tx + 8, ty + 16);
+    ctx.fillStyle = '#0f0';
+    ctx.fillText(`${newDps.toFixed(1)} DPS`, tx + tw - 65, ty + 16);
+
+    // Separator
+    ctx.fillStyle = '#445';
+    ctx.fillText('vs your weakest:', tx + 8, ty + 34);
+
+    // Weakest weapon
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(`${weakest.weapon.emoji} ${weakest.weapon.name} Lv${weakest.weapon.level}`, tx + 8, ty + 50);
+    const diff = newDps - weakest.dps;
+    ctx.fillStyle = diff >= 0 ? '#0f0' : '#f44';
+    ctx.fillText(`${weakest.dps.toFixed(1)} DPS (${diff >= 0 ? '+' : ''}${diff.toFixed(1)})`, tx + 8, ty + 64);
 }
 
 // ============================================================
