@@ -2824,8 +2824,8 @@ function buildEnemyGrid() {
         const k = gridKey(e.x, e.y);
         spatialGrid[k].push(e);
         // Also add to neighboring cells if near border (for radius overlap)
-        const col = Math.floor(e.x / GRID_CELL);
-        const row = Math.floor(e.y / GRID_CELL);
+        const col = clamp(Math.floor(e.x / GRID_CELL), 0, GRID_COLS - 1);
+        const row = clamp(Math.floor(e.y / GRID_CELL), 0, GRID_ROWS - 1);
         const r = e.radius;
         if (e.x - r < col * GRID_CELL && col > 0) spatialGrid[row * GRID_COLS + (col - 1)].push(e);
         if (e.x + r > (col + 1) * GRID_CELL && col < GRID_COLS - 1) spatialGrid[row * GRID_COLS + (col + 1)].push(e);
