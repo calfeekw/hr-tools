@@ -224,11 +224,10 @@ function getMusicPhase() {
     if (gameState === STATE.SHOP || gameState === STATE.WAVE_END) return 'shop';
     if (gameState === STATE.VICTORY) return 'victory';
     if (gameState === STATE.GAME_OVER) return 'defeat';
-    // Playing
+    // Only play music during boss waves — regular combat is silent
     const isBoss = wave % 5 === 0 && wave > 0 && enemies.some(e => e.isBoss);
     if (isBoss) return 'boss';
-    if (wave > 10) return 'combat_late';
-    return 'combat_early';
+    return 'silent';
 }
 
 function startBGMusic() {
@@ -246,6 +245,13 @@ function scheduleMusicLoop() {
     _musicPhase = phase;
 
     let bpm, bassSeq, leadSeq, useKick = true, useHihat = true;
+
+    if (phase === 'silent') {
+        // No music during regular combat — just keep polling for phase changes
+        _musicNextStart = ac.currentTime + 0.5;
+        _musicTimeout = setTimeout(scheduleMusicLoop, 400);
+        return;
+    }
 
     if (phase === 'shop' || phase === 'menu') {
         // Slow lo-fi elevator music — C-Am-F-G
