@@ -407,7 +407,7 @@ function startBGMusic() {
     _musicNextStart = audioCtx.currentTime + 0.1;
     scheduleMusicLoop();
 }
-function stopBGMusic() { allMuted = true; if (musicGain) musicGain.gain.value = 0; if (sfxGain) sfxGain.gain.value = 0; }
+function stopBGMusic() { allMuted = true; if (musicGain) musicGain.gain.value = 0; if (sfxGain) sfxGain.gain.value = 0; if (_musicTimeout) { clearTimeout(_musicTimeout); _musicTimeout = null; } }
 function resumeBGMusic() { allMuted = false; if (musicGain) musicGain.gain.value = 0.13; if (sfxGain) sfxGain.gain.value = 0.8; }
 
 function scheduleMusicLoop() {
@@ -843,7 +843,9 @@ function updatePlayer(dt) {
     if (dx !== 0 || dy !== 0) {
         const len = Math.sqrt(dx * dx + dy * dy);
         if (len > 1) { dx /= len; dy /= len; }
-        const spd = player.baseSpeed * player.stats.speed;
+        const slowZoneMult = player._slowZone ? 0.5 : 1;
+        player._slowZone = false; // Reset each frame, re-set by particle update
+        const spd = player.baseSpeed * player.stats.speed * slowZoneMult;
         player.x += dx * spd * dt;
         player.y += dy * spd * dt;
         if (dx > 0) player.facing = 1;
@@ -940,9 +942,10 @@ function updateWeapons(dt) {
                         hit = true;
                     }
                 }
-                if (hit || enemies.length > 0) {
+                if (hit) {
                     player.weaponTimers[i] = cooldown;
-                    if (hit) { sfxShoot(w.id); particles.push({ type: 'melee', x: player.x, y: player.y, r: range, t: 0.22 }); }
+                    sfxShoot(w.id);
+                    particles.push({ type: 'melee', x: player.x, y: player.y, r: range, t: 0.22 });
                 }
             }
             continue;
@@ -967,18 +970,29 @@ function fireWeapon(w, target) {
     const n = norm(target.x - player.x, target.y - player.y);
     addMuzzleFlash(player.x + n.x * (player.radius + 8), player.y + n.y * (player.radius + 8), n.x, n.y, w.color);
     const speed = w.projSpeed || 300;
-    bullets.push({
-        x: player.x + n.x * (player.radius + 6),
-        y: player.y + n.y * (player.radius + 6),
-        vx: n.x * speed, vy: n.y * speed,
-        dmg: playerEffectiveDmg(w),
-        radius: w.aoe ? 7 : 5,
-        weapon: w,
-        pierce: w.pierce || 1,
-        hitSet: new Set(),
-        ttl: (playerEffectiveRange(w) / speed) * 1.6,
-        dead: false,
-    });
+    const burstCount = w.burstCount || 1;
+    const burstSpread = w.burstSpread || 0;
+    const baseAngle = Math.atan2(n.y, n.x);
+
+    for (let b = 0; b < burstCount; b++) {
+        // Spread shots evenly around center: e.g. 3 shots at -spread, 0, +spread
+        const offset = burstCount > 1 ? (b - (burstCount - 1) / 2) * burstSpread : 0;
+        const angle = baseAngle + offset;
+        const bvx = Math.cos(angle) * speed;
+        const bvy = Math.sin(angle) * speed;
+        bullets.push({
+            x: player.x + n.x * (player.radius + 6),
+            y: player.y + n.y * (player.radius + 6),
+            vx: bvx, vy: bvy,
+            dmg: playerEffectiveDmg(w),
+            radius: w.aoe ? 7 : 5,
+            weapon: w,
+            pierce: w.pierce || 1,
+            hitSet: new Set(),
+            ttl: (playerEffectiveRange(w) / speed) * 1.6,
+            dead: false,
+        });
+    }
 }
 
 // ============================================================
@@ -1068,9 +1082,9 @@ function enemyDie(e) {
     if (e.isElite && e.type === 'intern') {
         for (let i = 0; i < 2; i++) enemies.push(spawnEnemy('intern', e.x + rand(-20, 20), e.y + rand(-20, 20)));
     }
-    // Elite accountant: slow zone
+    // Elite accountant: slow zone (damages/slows player if nearby)
     if (e.isElite && e.type === 'accountant') {
-        particles.push({ type: 'aoe', x: e.x, y: e.y, maxR: 60, r: 0, color: '#228833', t: 3.0 });
+        particles.push({ type: 'slow_zone', x: e.x, y: e.y, maxR: 60, r: 60, color: '#228833', t: 3.0 });
     }
 
     addDeathParticles(e);
@@ -1175,7 +1189,7 @@ function updateEnemyAI(e, dt) {
                     enemyBullets.push({ x: e.x, y: e.y, vx: Math.cos(angle) * 160, vy: Math.sin(angle) * 160, dmg: e.dmg * 1.4, radius: 12, color: '#f8a', ttl: 2.8, dead: false });
                 }
             }
-            if (!e._summonTimer) e._summonTimer = 0;
+            if (e._summonTimer === undefined) e._summonTimer = 8; // First summon after 8 seconds, not immediately
             e._summonTimer -= 1.6;
             if (e._summonTimer <= 0) { e._summonTimer = 12; enemies.push(spawnEnemy('hrrep')); enemies.push(spawnEnemy('manager')); }
         }
@@ -1260,18 +1274,32 @@ function updateBullets(dt) {
             for (const o of OBSTACLES) { if (circleRect(b.x, b.y, b.radius, o.x, o.y, o.w, o.h)) { b.dead = true; break; } }
         }
         if (!b.dead && dist(b, player) < b.radius + player.radius) {
-            playerTakeDamage(b.dmg);
+            playerTakeDamage(b.dmg * (player.rangedDmgMult || 1));
             b.dead = true;
         }
         if (b.dead) enemyBullets.splice(i, 1);
     }
 }
 
+// Deferred AOE explosions — processed after bullet iteration to avoid shared array corruption
+let _pendingExplosions = [];
+
 function explodeBullet(b) {
     const aoe = b.weapon.aoe * (player.aoeMult || 1);
-    const nearby = getNearbyEnemies(b.x, b.y, aoe + 60);
-    for (const e of nearby) { if (!e.dead && dist(b, e) < aoe + e.radius) enemyTakeDamage(e, b.dmg); }
-    particles.push({ type: 'aoe', x: b.x, y: b.y, maxR: aoe, r: 0, color: b.weapon.color, t: 0.5 });
+    _pendingExplosions.push({ x: b.x, y: b.y, aoe, dmg: b.dmg, color: b.weapon.color });
+}
+
+function processPendingExplosions() {
+    for (let i = 0; i < _pendingExplosions.length; i++) {
+        const exp = _pendingExplosions[i];
+        const nearby = getNearbyEnemies(exp.x, exp.y, exp.aoe + 60);
+        for (let j = 0; j < nearby.length; j++) {
+            const e = nearby[j];
+            if (!e.dead && dist(exp, e) < exp.aoe + e.radius) enemyTakeDamage(e, exp.dmg);
+        }
+        particles.push({ type: 'aoe', x: exp.x, y: exp.y, maxR: exp.aoe, r: 0, color: exp.color, t: 0.5 });
+    }
+    _pendingExplosions.length = 0;
 }
 
 // ============================================================
@@ -1395,7 +1423,14 @@ function updateParticles(dt) {
             p.x += p.vx * dt; p.y += p.vy * dt;
             p.vx *= Math.max(0, 1 - 5 * dt); p.vy *= Math.max(0, 1 - 5 * dt);
         }
-        if (p.type === 'aoe') p.r = p.maxR * (1 - p.t / 0.5);
+        if (p.type === 'aoe') p.r = p.maxR * clamp(1 - p.t / 0.5, 0, 1);
+        // Elite accountant slow zone: slow player if inside
+        if (p.type === 'slow_zone' && player && gameState === STATE.PLAYING) {
+            if (dist(p, player) < p.maxR + player.radius) {
+                // Temporarily slow player movement this frame
+                player._slowZone = true;
+            }
+        }
         if (p.t <= 0) particles.splice(i, 1);
     }
     // Enforce particle cap by removing oldest
@@ -1642,10 +1677,11 @@ function update(dt) {
             enemies.push(e);
             spawnTimer = Math.max(0.18, 1.3 - wave * 0.07);
         }
-        updatePlayer(dt);
         updateEnemies(dt);
         buildEnemyGrid(); // Build spatial grid after enemy positions updated, used by weapons + bullets
+        updatePlayer(dt);
         updateBullets(dt);
+        processPendingExplosions(); // Process deferred AOE after bullet iteration is complete
 
         // Wave announcement timer
         if (waveAnnounceTimer > 0) waveAnnounceTimer -= dt;
@@ -2460,7 +2496,7 @@ function isFullscreenBtnHit(mx, my) {
 
 canvas.addEventListener('mousemove', () => {
     if (gameState === STATE.SHOP) {
-        const cw = 170, ch = 195, gap = 12;
+        const cw = 175, ch = 200, gap = 14;
         const totalW = 4 * cw + 3 * gap;
         const sx = (W - totalW) / 2, sy = 74;
         hoveredCard = -1;
@@ -2524,7 +2560,7 @@ canvas.addEventListener('click', () => {
             }
         }
     } else if (gameState === STATE.SHOP) {
-        const cw = 170, ch = 195, gap = 12;
+        const cw = 175, ch = 200, gap = 14;
         const totalW = 4 * cw + 3 * gap;
         const sx = (W - totalW) / 2, sy = 74;
         const btnY = sy + ch + 12;
@@ -2724,7 +2760,7 @@ const RELIC_DEFS = [
     { id: 'company_card',   name: 'Company Card',               emoji: '\u{1F4B3}', desc: '10% chance free purchase',            cost: 4, apply: p => { p.freeChance = (p.freeChance || 0) + 0.1; } },
     { id: 'motiv_poster',   name: 'Motivational Poster',        emoji: '\u{1F5BC}\uFE0F', desc: '+5% dmg per combo level',       cost: 5, apply: p => { p.comboDmgBonus = (p.comboDmgBonus || 0) + 0.05; } },
     { id: 'fidget_spinner', name: 'Fidget Spinner',             emoji: '\u{1F300}', desc: '+10% fire rate',                      cost: 4, apply: p => { p.stats.atkSpd *= 1.1; } },
-    { id: 'stress_ball',    name: 'Stress Ball',                emoji: '\u{1F3BE}', desc: 'Regen 1 HP/10s',                      cost: 3, apply: p => { p.stats.regen += 0.1; } },
+    { id: 'stress_ball',    name: 'Stress Ball',                emoji: '\u{1F3BE}', desc: 'Regen 1 HP/sec',                      cost: 3, apply: p => { p.stats.regen += 1; } },
     { id: 'swivel_chair',   name: 'Swivel Chair',               emoji: '\u{1FA91}', desc: '+25% dash distance',                  cost: 4, apply: p => { p.dashDistMult = (p.dashDistMult || 1) * 1.25; } },
     { id: 'coffee_iv',      name: 'Coffee IV Drip',             emoji: '\u2615',    desc: '+20% fire rate, -10% max HP',         cost: 4, apply: p => { p.stats.atkSpd *= 1.2; p.maxHp = Math.floor(p.maxHp * 0.9); p.hp = Math.min(p.hp, p.maxHp); } },
     { id: 'badge_lanyard',  name: 'Badge Lanyard',              emoji: '\u{1F3F7}\uFE0F', desc: '+15% material drops',           cost: 4, apply: p => { p.matDropMult = (p.matDropMult || 1) * 1.15; } },
@@ -2741,10 +2777,9 @@ function getRelicShopOptions() {
     const ownedIds = new Set(playerRelics.map(r => r.id));
     const available = RELIC_DEFS.filter(r => !ownedIds.has(r.id));
     if (available.length === 0) return [];
-    const priceScale = 1 + (wave - 1) * 0.15;
     const chosen = shuffle(available).slice(0, 1);
     return chosen.map(r => ({
-        ...r, cost: Math.ceil(r.cost * priceScale), cat: 'relic',
+        ...r, cat: 'relic',
         apply: (p) => { r.apply(p); playerRelics.push(r); },
     }));
 }
