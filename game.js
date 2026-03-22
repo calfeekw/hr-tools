@@ -691,7 +691,7 @@ function createPlayer(charId) {
         baseSpeed: 180,
         hp: ch.hp, maxHp: ch.hp,
         xp: 0, xpToNext: 25, level: 1,
-        materials: 0,
+        materials: 3,
         stats: {
             damage: ch.damage,
             atkSpd: ch.atkSpd,
@@ -986,12 +986,12 @@ function fireWeapon(w, target) {
 let enemies = [];
 
 const ENEMY_DEFS = {
-    intern:    { name: 'Intern',        emoji: '\u{1F9D1}\u200D\u{1F4BC}', color: '#5577cc', radius: 16, hp: 40,  spd: 80,  dmg: 8,  contactDps: 10,  xp: 3, mat: 1, ai: 'chase' },
-    manager:   { name: 'Mgr',          emoji: '\u{1F624}',   color: '#cc6633', radius: 18, hp: 75,  spd: 90,  dmg: 14, contactDps: 18,  xp: 5, mat: 2, ai: 'chase' },
-    printer:   { name: 'Printer',      emoji: '\u{1F5A8}\uFE0F',  color: '#667744', radius: 22, hp: 120, spd: 30,  dmg: 10, contactDps: 8,   xp: 7, mat: 3, ai: 'ranged' },
-    hrrep:     { name: 'HR Rep',       emoji: '\u{1F4CB}',   color: '#bb44bb', radius: 15, hp: 50,  spd: 110, dmg: 16, contactDps: 22,  xp: 6, mat: 2, ai: 'chase' },
-    itguy:     { name: 'IT Guy',       emoji: '\u{1F4BB}',   color: '#44aa77', radius: 17, hp: 65,  spd: 65,  dmg: 10, contactDps: 14,  xp: 6, mat: 3, ai: 'spawner' },
-    accountant:{ name: 'Accountant',   emoji: '\u{1F9EE}',   color: '#228833', radius: 20, hp: 110, spd: 45,  dmg: 8,  contactDps: 8,   xp: 7, mat: 4, ai: 'ranged2' },
+    intern:    { name: 'Intern',        emoji: '\u{1F9D1}\u200D\u{1F4BC}', color: '#5577cc', radius: 16, hp: 40,  spd: 80,  dmg: 8,  contactDps: 10,  xp: 3, mat: 2, ai: 'chase' },
+    manager:   { name: 'Mgr',          emoji: '\u{1F624}',   color: '#cc6633', radius: 18, hp: 75,  spd: 90,  dmg: 14, contactDps: 18,  xp: 5, mat: 3, ai: 'chase' },
+    printer:   { name: 'Printer',      emoji: '\u{1F5A8}\uFE0F',  color: '#667744', radius: 22, hp: 120, spd: 30,  dmg: 10, contactDps: 8,   xp: 7, mat: 4, ai: 'ranged' },
+    hrrep:     { name: 'HR Rep',       emoji: '\u{1F4CB}',   color: '#bb44bb', radius: 15, hp: 50,  spd: 110, dmg: 16, contactDps: 22,  xp: 6, mat: 3, ai: 'chase' },
+    itguy:     { name: 'IT Guy',       emoji: '\u{1F4BB}',   color: '#44aa77', radius: 17, hp: 65,  spd: 65,  dmg: 10, contactDps: 14,  xp: 6, mat: 4, ai: 'spawner' },
+    accountant:{ name: 'Accountant',   emoji: '\u{1F9EE}',   color: '#228833', radius: 20, hp: 110, spd: 45,  dmg: 8,  contactDps: 8,   xp: 7, mat: 5, ai: 'ranged2' },
     cfo:       { name: 'THE CFO',      emoji: '\u{1F4B0}',   color: '#ccaa00', radius: 42, hp: 900, spd: 68,  dmg: 38, contactDps: 45,  xp: 60, mat: 25, ai: 'boss1', isBoss: true },
     hrdirector:{ name: 'HR DIRECTOR',  emoji: '\u{1F4CE}',   color: '#cc44cc', radius: 44, hp: 1400,spd: 62,  dmg: 32, contactDps: 40,  xp: 80, mat: 30, ai: 'boss2', isBoss: true },
     cto:       { name: 'THE CTO',      emoji: '\u2328\uFE0F',  color: '#2244cc', radius: 46, hp: 2000,spd: 72,  dmg: 30, contactDps: 45,  xp: 100,mat: 35, ai: 'boss3', isBoss: true },
@@ -1059,7 +1059,7 @@ function enemyDie(e) {
     const matBonus = 1 + getComboMatBonus();
     const matMult = (player.matDropMult || 1) * matBonus;
     xpOrbs.push({ x: e.x, y: e.y, v: e.xp });
-    if (Math.random() < 0.65 + player.stats.luck * 0.08) {
+    if (Math.random() < 0.85 + player.stats.luck * 0.05) {
         matDrops.push({ x: e.x, y: e.y, v: Math.ceil(e.mat * matMult) });
     }
 
@@ -1286,7 +1286,7 @@ const WAVE_CONFIGS = (() => {
         if (w === 10) { cfg.push([{ type: 'hrdirector', count: 1 }, { type: 'manager', count: 5 }, { type: 'hrrep', count: 4 }]); continue; }
         if (w === 15) { cfg.push([{ type: 'cto', count: 1 }, { type: 'itguy', count: 5 }, { type: 'accountant', count: 4 }]); continue; }
         if (w === 20) { cfg.push([{ type: 'ceo', count: 1 }, { type: 'manager', count: 6 }, { type: 'hrrep', count: 5 }, { type: 'accountant', count: 4 }]); continue; }
-        const groups = [{ type: 'intern', count: Math.floor(3 + w * 1.5) }];
+        const groups = [{ type: 'intern', count: Math.floor(4 + w * 1.8) }];
         if (w >= 3) groups.push({ type: 'manager', count: Math.floor(1 + (w - 2) * 0.8) });
         if (w >= 4) groups.push({ type: 'printer', count: Math.floor((w - 3) * 0.6) });
         if (w >= 5) groups.push({ type: 'hrrep', count: Math.floor((w - 4) * 0.7) });
@@ -1428,13 +1428,13 @@ const UPGRADE_POOL = [
     { id: 'heal',        name: 'First Aid Kit',        emoji: '\u{1FA79}',  desc: 'Restore 50 HP right now',      cost: 2, cat: 'stat', apply: p => { playerHeal(50); } },
     { id: 'pickup_up',   name: 'Long Arms',            emoji: '\u{1F9B6}',  desc: '+35% pickup radius',            cost: 3, cat: 'stat', apply: p => { p.stats.pickupRadius *= 1.35; } },
     // New weapons
-    { id: 'w_rubberband',name: 'Rubber Band',          emoji: '\u{1F517}',  desc: 'New: Rapid-fire rubber bands',  cost: 5, cat: 'weapon', weaponId: 'rubberband', apply: p => { p.weapons.push({ ...WEAPONS.rubberband, level: 1 }); } },
-    { id: 'w_coffeemug', name: 'Coffee Mug',           emoji: '\u2615',  desc: 'New: AOE thrown coffee mug',    cost: 6, cat: 'weapon', weaponId: 'coffeemug',  apply: p => { p.weapons.push({ ...WEAPONS.coffeemug, level: 1 }); } },
-    { id: 'w_keyboard',  name: 'Keyboard',             emoji: '\u2328\uFE0F', desc: 'New: Melee keyboard smash',     cost: 5, cat: 'weapon', weaponId: 'keyboard',   apply: p => { p.weapons.push({ ...WEAPONS.keyboard, level: 1 }); } },
-    { id: 'w_usb',       name: 'USB Drive',            emoji: '\u{1F4BE}',  desc: 'New: Orbiting USB weapon',      cost: 5, cat: 'weapon', weaponId: 'usb',        apply: p => { p.weapons.push({ ...WEAPONS.usb, level: 1 }); } },
-    { id: 'w_laser',     name: 'Laser Pointer',        emoji: '\u{1F534}',  desc: 'New: Piercing laser shots',     cost: 6, cat: 'weapon', weaponId: 'laser',      apply: p => { p.weapons.push({ ...WEAPONS.laser, level: 1 }); } },
-    { id: 'w_sticky',    name: 'Sticky Note',          emoji: '\u{1F4DD}',  desc: 'New: Slow + poison notes',      cost: 5, cat: 'weapon', weaponId: 'sticky',     apply: p => { p.weapons.push({ ...WEAPONS.sticky, level: 1 }); } },
-    { id: 'w_tps',       name: 'TPS Report',           emoji: '\u{1F4C4}',  desc: 'New: Massive AOE slam',         cost: 8, cat: 'weapon', weaponId: 'tpsreport',  apply: p => { p.weapons.push({ ...WEAPONS.tpsreport, level: 1 }); } },
+    { id: 'w_rubberband',name: 'Rubber Band',          emoji: '\u{1F517}',  desc: 'New: Rapid-fire rubber bands',  cost: 4, cat: 'weapon', weaponId: 'rubberband', apply: p => { p.weapons.push({ ...WEAPONS.rubberband, level: 1 }); } },
+    { id: 'w_coffeemug', name: 'Coffee Mug',           emoji: '\u2615',  desc: 'New: AOE thrown coffee mug',    cost: 5, cat: 'weapon', weaponId: 'coffeemug',  apply: p => { p.weapons.push({ ...WEAPONS.coffeemug, level: 1 }); } },
+    { id: 'w_keyboard',  name: 'Keyboard',             emoji: '\u2328\uFE0F', desc: 'New: Melee keyboard smash',     cost: 4, cat: 'weapon', weaponId: 'keyboard',   apply: p => { p.weapons.push({ ...WEAPONS.keyboard, level: 1 }); } },
+    { id: 'w_usb',       name: 'USB Drive',            emoji: '\u{1F4BE}',  desc: 'New: Orbiting USB weapon',      cost: 4, cat: 'weapon', weaponId: 'usb',        apply: p => { p.weapons.push({ ...WEAPONS.usb, level: 1 }); } },
+    { id: 'w_laser',     name: 'Laser Pointer',        emoji: '\u{1F534}',  desc: 'New: Piercing laser shots',     cost: 5, cat: 'weapon', weaponId: 'laser',      apply: p => { p.weapons.push({ ...WEAPONS.laser, level: 1 }); } },
+    { id: 'w_sticky',    name: 'Sticky Note',          emoji: '\u{1F4DD}',  desc: 'New: Slow + poison notes',      cost: 4, cat: 'weapon', weaponId: 'sticky',     apply: p => { p.weapons.push({ ...WEAPONS.sticky, level: 1 }); } },
+    { id: 'w_tps',       name: 'TPS Report',           emoji: '\u{1F4C4}',  desc: 'New: Massive AOE slam',         cost: 6, cat: 'weapon', weaponId: 'tpsreport',  apply: p => { p.weapons.push({ ...WEAPONS.tpsreport, level: 1 }); } },
 ];
 
 let shopOptions = [];
