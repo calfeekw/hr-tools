@@ -1080,7 +1080,7 @@ function enemyDie(e) {
 function updateEnemies(dt) {
     for (let i = enemies.length - 1; i >= 0; i--) {
         const e = enemies[i];
-        if (e.dead) { enemies.splice(i, 1); continue; }
+        if (!e || e.dead) { enemies.splice(i, 1); continue; }
         updateEnemyAI(e, dt);
         if (e.dead) { enemies.splice(i, 1); continue; }
         e.x = clamp(e.x, e.radius, W - e.radius);
@@ -1614,6 +1614,7 @@ function update(dt) {
     if (gameState === STATE.PAUSED) return; // Skip all updates while paused
 
     if (gameState === STATE.PLAYING) {
+        if (!player) { gameState = STATE.MENU; return; }
         runElapsedTime += dt;
         // Spawn from queue
         spawnTimer -= dt;
@@ -1853,46 +1854,51 @@ function renderBullets() {
 function renderEnemies() {
     const t = performance.now() / 1000;
     for (const e of enemies) {
-        const anim = getAnimScale(e, t);
-        ctx.save();
-        if (anim.alpha !== undefined) ctx.globalAlpha = anim.alpha;
-        if (e.flashT > 0) ctx.filter = 'brightness(4)';
-        else if (e.slowT > 0) ctx.filter = 'hue-rotate(200deg) brightness(1.3)';
+        if (!e || e.dead) continue;
+        try {
+            const anim = getAnimScale(e, t);
+            ctx.save();
+            if (anim.alpha !== undefined) ctx.globalAlpha = anim.alpha;
+            if (e.flashT > 0) ctx.filter = 'brightness(4)';
+            else if (e.slowT > 0) ctx.filter = 'hue-rotate(200deg) brightness(1.3)';
 
-        ctx.translate(e.x, e.y);
-        ctx.scale(anim.sx, anim.sy);
+            ctx.translate(e.x, e.y);
+            ctx.scale(anim.sx || 1, anim.sy || 1);
 
-        // Elite glow
-        if (e.isElite) {
-            ctx.shadowColor = '#ffcc00';
-            ctx.shadowBlur = 12 + Math.sin(t * 4) * 4;
+            // Elite glow
+            if (e.isElite) {
+                ctx.shadowColor = '#ffcc00';
+                ctx.shadowBlur = 12 + Math.sin(t * 4) * 4;
+            }
+
+            ctx.fillStyle = e.color;
+            ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.filter = 'none';
+
+            ctx.font = `${e.radius * 1.4}px serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(e.emoji, 0, 0);
+
+            // Elite crown indicator
+            if (e.isElite) {
+                ctx.font = `${e.radius * 0.7}px serif`;
+                ctx.fillText('\u{1F451}', 0, -e.radius - 4);
+            }
+
+            ctx.restore();
+
+            // Health bar (drawn outside save/restore to avoid transform issues)
+            if (e.hp < e.maxHp) {
+                const bw = e.radius * 2, bx = e.x - e.radius, by = e.y - e.radius - 9;
+                ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, 5);
+                ctx.fillStyle = e.hp / e.maxHp > 0.5 ? '#0f0' : e.hp / e.maxHp > 0.25 ? '#ff0' : '#f00';
+                ctx.fillRect(bx, by, bw * (e.hp / e.maxHp), 5);
+            }
+        } catch (err) {
+            ctx.restore();
+            console.error('renderEnemy error:', err, e);
         }
-
-        ctx.fillStyle = e.color;
-        ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI * 2); ctx.fill();
-        ctx.shadowBlur = 0;
-        ctx.filter = 'none';
-
-        ctx.font = `${e.radius * 1.4}px serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(e.emoji, 0, 0);
-
-        // Elite crown indicator
-        if (e.isElite) {
-            ctx.font = `${e.radius * 0.7}px serif`;
-            ctx.fillText('\u{1F451}', 0, -e.radius - 4);
-        }
-
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.translate(Math.round(screenShake.x), Math.round(screenShake.y));
-
-        if (e.hp < e.maxHp) {
-            const bw = e.radius * 2, bx = e.x - e.radius, by = e.y - e.radius - 9;
-            ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, 5);
-            ctx.fillStyle = e.hp / e.maxHp > 0.5 ? '#0f0' : e.hp / e.maxHp > 0.25 ? '#ff0' : '#f00';
-            ctx.fillRect(bx, by, bw * (e.hp / e.maxHp), 5);
-        }
-        ctx.restore();
     }
 }
 
@@ -3023,7 +3029,7 @@ function gridKey(x, y) {
 function buildEnemyGrid() {
     resetGrid();
     for (const e of enemies) {
-        if (e.dead) continue;
+        if (!e || e.dead) continue;
         const k = gridKey(e.x, e.y);
         spatialGrid[k].push(e);
         // Also add to neighboring cells if near border (for radius overlap)
@@ -3476,11 +3482,26 @@ function renderWeaponComparison(shopWeapon, x, y) {
 // 26. GAME LOOP
 // ============================================================
 let lastTime = 0;
+let _loopErrors = 0;
 function loop(timestamp) {
     const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
     lastTime = timestamp;
-    update(dt);
-    render();
+    try {
+        update(dt);
+        render();
+    } catch (err) {
+        _loopErrors++;
+        console.error('Game loop error (wave ' + wave + ', state ' + gameState + '):', err);
+        // Attempt recovery: if stuck in PLAYING with no enemies and no spawn queue, force wave end
+        if (gameState === STATE.PLAYING && enemies.length === 0 && spawnQueue.length === 0) {
+            setGameState(STATE.WAVE_END);
+        }
+        if (_loopErrors > 60) {
+            console.error('Too many errors, returning to menu');
+            gameState = STATE.MENU;
+            _loopErrors = 0;
+        }
+    }
     requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
