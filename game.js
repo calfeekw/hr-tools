@@ -508,6 +508,10 @@ let hoveredDiffIdx = -1;
 let waveTransitionTimer = 0;
 let screenShake = { x: 0, y: 0, t: 0, mag: 0 };
 
+// Hit stop (frame freeze) system
+let hitStopTimer = 0;
+const HITSTOP_ENABLED = true;
+
 // Combo system globals
 let comboCount = 0;
 let comboTimer = 0;
@@ -1109,6 +1113,8 @@ function enemyDie(e) {
     addDeathParticles(e);
     sfxEnemyDie();
     addShake(e.isBoss ? 8 : e.isElite ? 5 : 3, e.isBoss ? 0.3 : 0.15);
+    // Hit stop: brief frame freeze on kills for impact
+    triggerHitStop(e.isBoss ? 0.12 : e.isElite ? 0.05 : 0.02);
 }
 
 function updateEnemies(dt) {
@@ -1440,6 +1446,7 @@ function addXPSparkle(x, y) {
     }
 }
 function addShake(mag, dur) { if (!SCREEN_SHAKE_ENABLED) return; if (mag > screenShake.mag) { screenShake.mag = mag; screenShake.t = dur; } }
+function triggerHitStop(duration) { if (HITSTOP_ENABLED && duration > hitStopTimer) hitStopTimer = duration; }
 
 function updateParticles(dt) {
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -1648,6 +1655,7 @@ function startNewGame(charId) {
     player = createPlayer(charId || 'developer');
     enemies = []; bullets = []; enemyBullets = []; xpOrbs = []; matDrops = []; particles = []; floaters = [];
     dashAfterimages = [];
+    hitStopTimer = 0;
     comboCount = 0; comboTimer = 0;
     comboMilestoneText = ''; comboMilestoneTimer = 0;
     waveAnnounceTimer = 0;
@@ -1683,6 +1691,11 @@ function update(dt) {
 
     if (gameState === STATE.PLAYING) {
         if (!player) { gameState = STATE.MENU; return; }
+        // Hit stop: freeze gameplay for dramatic impact
+        if (hitStopTimer > 0) {
+            hitStopTimer -= dt;
+            return; // Skip gameplay update but still render
+        }
         runElapsedTime += dt;
         // Spawn from queue
         spawnTimer -= dt;
@@ -1958,11 +1971,20 @@ function renderEnemies() {
             ctx.restore();
 
             // Health bar (drawn outside save/restore to avoid transform issues)
-            if (e.hp < e.maxHp) {
-                const bw = e.radius * 2, bx = e.x - e.radius, by = e.y - e.radius - 9;
-                ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, 5);
-                ctx.fillStyle = e.hp / e.maxHp > 0.5 ? '#0f0' : e.hp / e.maxHp > 0.25 ? '#ff0' : '#f00';
-                ctx.fillRect(bx, by, bw * (e.hp / e.maxHp), 5);
+            // Always show for elites/bosses, show for regular enemies when damaged
+            if (e.hp < e.maxHp || e.isElite || e.isBoss) {
+                const hpPct = clamp(e.hp / e.maxHp, 0, 1);
+                const bw = e.isBoss ? 0 : (e.isElite ? e.radius * 2.8 : e.radius * 2);
+                const bh = e.isElite ? 5 : 4;
+                const bx = e.x - bw / 2;
+                const by = e.y - e.radius - (e.isElite ? 14 : 10);
+                if (!e.isBoss) { // Boss uses the big bar at bottom
+                    ctx.fillStyle = '#111'; ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+                    ctx.fillStyle = '#333'; ctx.fillRect(bx, by, bw, bh);
+                    const hpColor = hpPct > 0.5 ? '#0f0' : hpPct > 0.25 ? '#ff0' : '#f00';
+                    ctx.fillStyle = e.isElite ? '#ffaa00' : hpColor;
+                    ctx.fillRect(bx, by, bw * hpPct, bh);
+                }
             }
         } catch (err) {
             ctx.restore();
@@ -2193,6 +2215,56 @@ function renderHUD() {
 
     // Weapon bar
     renderWeaponBar();
+
+    // Boss HP bar
+    renderBossHPBar();
+}
+
+function renderBossHPBar() {
+    const boss = enemies.find(e => e.isBoss && !e.dead);
+    if (!boss) return;
+
+    const barW = 400, barH = 20;
+    const bx = (W - barW) / 2, by = H - 50;
+    const hpPct = clamp(boss.hp / boss.maxHp, 0, 1);
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.beginPath(); ctx.roundRect(bx - 4, by - 18, barW + 8, barH + 28, 6); ctx.fill();
+
+    // Boss name
+    ctx.fillStyle = '#ff6666'; ctx.font = 'bold 12px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText(`\u{1F480} ${boss.name || boss.type.toUpperCase()} \u{1F480}`, W / 2, by - 4);
+
+    // Bar background
+    ctx.fillStyle = '#1a0000'; ctx.fillRect(bx, by, barW, barH);
+
+    // HP fill with gradient
+    if (hpPct > 0) {
+        const grad = ctx.createLinearGradient(bx, by, bx + barW * hpPct, by);
+        grad.addColorStop(0, hpPct > 0.5 ? '#cc2222' : '#ff4400');
+        grad.addColorStop(1, hpPct > 0.5 ? '#ff3333' : '#ff0000');
+        ctx.fillStyle = grad;
+        ctx.fillRect(bx, by, barW * hpPct, barH);
+
+        // Shine highlight
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(bx, by, barW * hpPct, barH / 2);
+    }
+
+    // Border
+    ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2;
+    ctx.strokeRect(bx, by, barW, barH);
+
+    // HP text
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText(`${Math.ceil(boss.hp)} / ${boss.maxHp}`, W / 2, by + barH / 2 + 4);
+
+    // Phase indicator
+    if (boss.phase && boss.phase > 1) {
+        ctx.fillStyle = '#ff8800'; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'right';
+        ctx.fillText(`PHASE ${boss.phase}`, bx + barW, by - 4);
+    }
 }
 
 function renderWeaponBar() {
