@@ -799,9 +799,10 @@ function performDash() {
     // Store pre-dash position for afterimage
     dashAfterimages.push({ x: player.x, y: player.y, t: 0.3 });
 
-    // Move 120px in direction
-    player.x += dx * 120;
-    player.y += dy * 120;
+    // Move in direction (dash distance affected by Swivel Chair relic)
+    const dashDist = 120 * (player.dashDistMult || 1);
+    player.x += dx * dashDist;
+    player.y += dy * dashDist;
     player.x = clamp(player.x, player.radius, W - player.radius);
     player.y = clamp(player.y, player.radius, H - player.radius);
     pushOutRect(player, player.radius);
@@ -1139,8 +1140,8 @@ function updateEnemyAI(e, dt) {
     else if (e.ai === 'spawner') { // IT Guy
         e.x += (dx / d) * spd * 0.6 * dt; e.y += (dy / d) * spd * 0.6 * dt;
         e.aiTimer -= dt;
-        if (e.aiTimer <= 0 && enemies.filter(x => x.type === 'intern').length < 25) {
-            e.aiTimer = 5;
+        if (e.aiTimer <= 0 && enemies.length < 50 && enemies.filter(x => x.type === 'intern').length < 15) {
+            e.aiTimer = 7;
             const angle = Math.random() * Math.PI * 2;
             enemies.push(spawnEnemy('intern', e.x + Math.cos(angle) * 30, e.y + Math.sin(angle) * 30));
         }
@@ -1267,7 +1268,7 @@ function updateBullets(dt) {
 }
 
 function explodeBullet(b) {
-    const aoe = b.weapon.aoe;
+    const aoe = b.weapon.aoe * (player.aoeMult || 1);
     const nearby = getNearbyEnemies(b.x, b.y, aoe + 60);
     for (const e of nearby) { if (!e.dead && dist(b, e) < aoe + e.radius) enemyTakeDamage(e, b.dmg); }
     particles.push({ type: 'aoe', x: b.x, y: b.y, maxR: aoe, r: 0, color: b.weapon.color, t: 0.5 });
@@ -1460,6 +1461,7 @@ function generateShopOptions(count = 4) {
     for (let i = 0; i < player.weapons.length; i++) {
         const w = player.weapons[i];
         if (w.level < 3 && !w.evolved) {
+            const weaponId = w.id; // Capture weapon ID, not index (index can shift after evolution splice)
             const uid = `upg_${w.id}_${i}`;
             if (!currentIds.has(uid)) {
                 weaponUpgrades.push({
@@ -1469,7 +1471,12 @@ function generateShopOptions(count = 4) {
                     desc: `Upgrade: +25% dmg, +12% speed`,
                     cost: 4 + w.level * 3,
                     cat: 'upgrade',
-                    apply: (p) => { p.weapons[i].level++; p.weapons[i].baseDmg *= 1.25; },
+                    apply: (p) => {
+                        const wIdx = p.weapons.findIndex(pw => pw.id === weaponId);
+                        if (wIdx === -1) return; // Weapon was removed (e.g. by evolution)
+                        p.weapons[wIdx].level++;
+                        p.weapons[wIdx].baseDmg *= 1.25;
+                    },
                 });
             }
         }
@@ -1501,9 +1508,9 @@ function generateShopOptions(count = 4) {
     // Fill remaining slots from mixed pool
     const remaining = shuffle([...weaponPool, ...statPool]);
     while (allOptions.length < count && remaining.length > 0) allOptions.push(remaining.shift());
-    shuffle(allOptions);
-    allOptions.forEach(o => { if (o.cost > 0) o.cost = Math.ceil(o.cost * priceScale); });
-    return allOptions;
+    const shuffled = shuffle(allOptions);
+    shuffled.forEach(o => { if (o.cost > 0) o.cost = Math.ceil(o.cost * priceScale); });
+    return shuffled;
 }
 
 function buyUpgrade(idx) {
@@ -1618,7 +1625,7 @@ function update(dt) {
         runElapsedTime += dt;
         // Spawn from queue
         spawnTimer -= dt;
-        if (spawnTimer <= 0 && spawnQueue.length > 0) {
+        if (spawnTimer <= 0 && spawnQueue.length > 0 && enemies.length < 80) {
             const type = spawnQueue.shift();
             const e = spawnEnemy(type);
             // Elite chance: starting wave 8, 15% per enemy, capped
@@ -1635,10 +1642,9 @@ function update(dt) {
             enemies.push(e);
             spawnTimer = Math.max(0.18, 1.3 - wave * 0.07);
         }
-        buildEnemyGrid(); // Build spatial grid once per frame for fast collision lookups
         updatePlayer(dt);
         updateEnemies(dt);
-        buildEnemyGrid(); // Rebuild after enemy positions changed
+        buildEnemyGrid(); // Build spatial grid after enemy positions updated, used by weapons + bullets
         updateBullets(dt);
 
         // Wave announcement timer
@@ -3013,11 +3019,12 @@ function applyEvolution(recipe) {
 const GRID_CELL = 80; // cell size in pixels
 const GRID_COLS = Math.ceil(W / GRID_CELL);
 const GRID_ROWS = Math.ceil(H / GRID_CELL);
-let spatialGrid = new Array(Math.ceil(W / 80) * Math.ceil(H / 80)).fill(null).map(() => []);
+// Pre-allocate grid arrays once — reuse by clearing length instead of creating new arrays
+const spatialGrid = [];
+for (let i = 0; i < GRID_COLS * GRID_ROWS; i++) spatialGrid.push([]);
 
 function resetGrid() {
-    spatialGrid = new Array(GRID_COLS * GRID_ROWS);
-    for (let i = 0; i < spatialGrid.length; i++) spatialGrid[i] = [];
+    for (let i = 0; i < spatialGrid.length; i++) spatialGrid[i].length = 0;
 }
 
 function gridKey(x, y) {
@@ -3028,13 +3035,14 @@ function gridKey(x, y) {
 
 function buildEnemyGrid() {
     resetGrid();
-    for (const e of enemies) {
+    for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
         if (!e || e.dead) continue;
-        const k = gridKey(e.x, e.y);
-        spatialGrid[k].push(e);
-        // Also add to neighboring cells if near border (for radius overlap)
         const col = clamp(Math.floor(e.x / GRID_CELL), 0, GRID_COLS - 1);
         const row = clamp(Math.floor(e.y / GRID_CELL), 0, GRID_ROWS - 1);
+        const k = row * GRID_COLS + col;
+        spatialGrid[k].push(e);
+        // Also add to neighboring cells if near border (for radius overlap)
         const r = e.radius;
         if (e.x - r < col * GRID_CELL && col > 0) spatialGrid[row * GRID_COLS + (col - 1)].push(e);
         if (e.x + r > (col + 1) * GRID_CELL && col < GRID_COLS - 1) spatialGrid[row * GRID_COLS + (col + 1)].push(e);
@@ -3043,18 +3051,29 @@ function buildEnemyGrid() {
     }
 }
 
+// Reusable array for getNearbyEnemies to avoid Set allocation per call
+const _nearbyResult = [];
+const _nearbySet = new Set();
 function getNearbyEnemies(x, y, range) {
-    const results = new Set();
+    _nearbyResult.length = 0;
+    _nearbySet.clear();
     const minCol = clamp(Math.floor((x - range) / GRID_CELL), 0, GRID_COLS - 1);
     const maxCol = clamp(Math.floor((x + range) / GRID_CELL), 0, GRID_COLS - 1);
     const minRow = clamp(Math.floor((y - range) / GRID_CELL), 0, GRID_ROWS - 1);
     const maxRow = clamp(Math.floor((y + range) / GRID_CELL), 0, GRID_ROWS - 1);
     for (let r = minRow; r <= maxRow; r++) {
         for (let c = minCol; c <= maxCol; c++) {
-            for (const e of spatialGrid[r * GRID_COLS + c]) results.add(e);
+            const cell = spatialGrid[r * GRID_COLS + c];
+            for (let i = 0; i < cell.length; i++) {
+                const e = cell[i];
+                if (!_nearbySet.has(e)) {
+                    _nearbySet.add(e);
+                    _nearbyResult.push(e);
+                }
+            }
         }
     }
-    return results;
+    return _nearbyResult;
 }
 
 // ============================================================
