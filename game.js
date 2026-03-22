@@ -43,7 +43,7 @@ function wrapText(text, maxWidth) {
 }
 
 // ============================================================
-// 3. INPUT (keys, mouse with coord transform)
+// 3. INPUT (keys, mouse with coord transform, gamepad)
 // ============================================================
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault(); });
@@ -59,6 +59,178 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
 canvas.addEventListener('mouseup',   e => { if (e.button === 0) mouse.down = false; });
 window.addEventListener('blur', () => { mouse.down = false; });
+
+// --- GAMEPAD SUPPORT ---
+// Standard mapping: https://w3c.github.io/gamepad/#remapping
+// Left stick = move, Right stick = aim, A = confirm/dash, B = back, X = reroll, Y = mute
+// LB/RB = shop nav, Start = pause, D-pad = menu navigation
+const DEADZONE = 0.2;
+const gamepad = {
+    connected: false,
+    index: -1,
+    // Right stick aim position (in game coords)
+    aimX: W / 2, aimY: H / 2,
+    // Button edge detection (pressed THIS frame, not held)
+    prev: {},
+    // Shop cursor for d-pad/stick navigation
+    shopCursor: 0,
+};
+
+window.addEventListener('gamepadconnected', e => {
+    gamepad.connected = true;
+    gamepad.index = e.gamepad.index;
+    addFloating(W / 2, H / 2 - 60, '🎮 Controller connected!', '#4f8');
+});
+window.addEventListener('gamepaddisconnected', e => {
+    if (e.gamepad.index === gamepad.index) {
+        gamepad.connected = false;
+        gamepad.index = -1;
+    }
+});
+
+function getGamepad() {
+    if (!gamepad.connected) return null;
+    const gps = navigator.getGamepads();
+    return gps ? gps[gamepad.index] : null;
+}
+
+function gpAxis(gp, idx) {
+    const v = gp.axes[idx] || 0;
+    return Math.abs(v) > DEADZONE ? v : 0;
+}
+
+function gpPressed(gp, btnIdx) {
+    // Returns true only on the frame the button transitions from up to down
+    const cur = gp.buttons[btnIdx] && gp.buttons[btnIdx].pressed;
+    const prev = gamepad.prev[btnIdx] || false;
+    gamepad.prev[btnIdx] = cur;
+    return cur && !prev;
+}
+
+function gpHeld(gp, btnIdx) {
+    return gp.buttons[btnIdx] && gp.buttons[btnIdx].pressed;
+}
+
+// Poll gamepad each frame and inject into game input
+function pollGamepad() {
+    const gp = getGamepad();
+    if (!gp) return;
+
+    // Left stick → movement keys
+    const lx = gpAxis(gp, 0), ly = gpAxis(gp, 1);
+    if (lx < -0.3) keys['arrowleft'] = true;
+    else if (keys['arrowleft'] && !keys['a']) keys['arrowleft'] = false;
+    if (lx > 0.3) keys['arrowright'] = true;
+    else if (keys['arrowright'] && !keys['d']) keys['arrowright'] = false;
+    if (ly < -0.3) keys['arrowup'] = true;
+    else if (keys['arrowup'] && !keys['w']) keys['arrowup'] = false;
+    if (ly > 0.3) keys['arrowdown'] = true;
+    else if (keys['arrowdown'] && !keys['s']) keys['arrowdown'] = false;
+
+    // Right stick → aim direction (updates mouse position relative to player)
+    const rx = gpAxis(gp, 2), ry = gpAxis(gp, 3);
+    if ((rx !== 0 || ry !== 0) && player) {
+        const aimDist = 200;
+        gamepad.aimX = player.x + rx * aimDist;
+        gamepad.aimY = player.y + ry * aimDist;
+        mouse.x = gamepad.aimX;
+        mouse.y = gamepad.aimY;
+    }
+
+    // --- Button mappings ---
+    // A (0) = Dash (in gameplay) / Confirm (in menus)
+    if (gpPressed(gp, 0)) {
+        if (gameState === STATE.PLAYING) {
+            performDash();
+        } else if (gameState === STATE.MENU) {
+            getAC();
+            if (hasSavedGame()) loadGame();
+            else gameState = STATE.CHAR_SELECT;
+        } else if (gameState === STATE.CHAR_SELECT) {
+            const charIdx = gamepad.shopCursor;
+            if (charIdx >= 0 && charIdx < CHAR_ORDER.length && isCharUnlocked(CHAR_ORDER[charIdx])) {
+                startNewGame(CHAR_ORDER[charIdx]);
+            }
+        } else if (gameState === STATE.SHOP) {
+            buyUpgrade(gamepad.shopCursor);
+        } else if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && resultsAnimTimer > 3.4) {
+            gameState = STATE.CHAR_SELECT;
+            pendingUnlocks = [];
+        }
+    }
+
+    // B (1) = Continue/Next wave (in shop) / New game (in menu)
+    if (gpPressed(gp, 1)) {
+        if (gameState === STATE.SHOP) {
+            beginNextWave();
+        } else if (gameState === STATE.MENU) {
+            getAC();
+            if (hasSavedGame()) deleteSave();
+            gameState = STATE.CHAR_SELECT;
+        }
+    }
+
+    // X (2) = Reroll (in shop)
+    if (gpPressed(gp, 2)) {
+        if (gameState === STATE.SHOP) rerollShop();
+    }
+
+    // Y (3) = Mute toggle
+    if (gpPressed(gp, 3)) {
+        if (allMuted) resumeBGMusic(); else stopBGMusic();
+    }
+
+    // Start (9) = Pause
+    if (gpPressed(gp, 9)) {
+        if (gameState === STATE.PAUSED) {
+            gameState = pausedFromState;
+            pausedFromState = null;
+        } else if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END) {
+            pausedFromState = gameState;
+            gameState = STATE.PAUSED;
+        }
+    }
+
+    // Select/Back (8) = Save & quit (when paused)
+    if (gpPressed(gp, 8)) {
+        if (gameState === STATE.PAUSED) {
+            if (saveGame()) {
+                addFloating(W / 2, H / 2, 'GAME SAVED!', '#0f0');
+                gameState = STATE.MENU;
+                pausedFromState = null;
+                stopBGMusic();
+            }
+        }
+    }
+
+    // D-pad navigation for shop & character select
+    // D-pad: Up=12, Down=13, Left=14, Right=15
+    if (gpPressed(gp, 14)) {
+        // Left
+        if (gameState === STATE.SHOP) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
+        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
+    }
+    if (gpPressed(gp, 15)) {
+        // Right
+        if (gameState === STATE.SHOP) gamepad.shopCursor = Math.min(3, gamepad.shopCursor + 1);
+        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.min(CHAR_ORDER.length - 1, gamepad.shopCursor + 1);
+    }
+
+    // LB (4) / RB (5) = also shop nav
+    if (gpPressed(gp, 4)) {
+        if (gameState === STATE.SHOP) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
+        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
+    }
+    if (gpPressed(gp, 5)) {
+        if (gameState === STATE.SHOP) gamepad.shopCursor = Math.min(3, gamepad.shopCursor + 1);
+        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.min(CHAR_ORDER.length - 1, gamepad.shopCursor + 1);
+    }
+
+    // Right trigger (7) = Dash (alternative)
+    if (gpPressed(gp, 7)) {
+        if (gameState === STATE.PLAYING) performDash();
+    }
+}
 
 // ============================================================
 // 4. AUDIO — Sound Manager + Music System
@@ -1431,6 +1603,7 @@ function startNewGame(charId) {
 // 15. UPDATE LOOP (with dash, combo, wave announce, magnet)
 // ============================================================
 function update(dt) {
+    pollGamepad();
     updateParticles(dt);
 
     // Results screen animation timer
@@ -2000,7 +2173,10 @@ function renderShop() {
     ctx.fillText(`\u{1F4CB} WAVE ${wave} SHOP`, W / 2, 36);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffdd00'; ctx.font = '15px Courier New';
-    ctx.fillText(`\u{1F4B0} ${player.materials} materials  |  [1-4] buy  [R] reroll  [Enter] continue`, W / 2, 60);
+    const shopHint = gamepad.connected
+        ? `\u{1F4B0} ${player.materials} materials  |  D-pad+A buy  X reroll  B continue`
+        : `\u{1F4B0} ${player.materials} materials  |  [1-4] buy  [R] reroll  [Enter] continue`;
+    ctx.fillText(shopHint, W / 2, 60);
 
     // Cards
     const cw = 175, ch = 200, gap = 14;
@@ -2010,7 +2186,7 @@ function renderShop() {
     for (let i = 0; i < 4; i++) {
         const u = shopOptions[i];
         const x = sx + i * (cw + gap), y = sy;
-        const hover = hoveredCard === i;
+        const hover = hoveredCard === i || (gamepad.connected && gamepad.shopCursor === i);
 
         if (!u) {
             ctx.fillStyle = '#0a0a18'; ctx.strokeStyle = '#1a1a30'; ctx.lineWidth = 1;
@@ -2104,6 +2280,10 @@ function renderMenu() {
     ctx.fillText('WASD or hold \u{1F5B1} Left Mouse to move  \u2022  Weapons auto-fire', W / 2, 244);
     ctx.fillText('Collect \u{1F4B0} between waves for upgrades  \u2022  [M] mute music', W / 2, 266);
     ctx.fillText('[Space] dash  \u2022  [F] fullscreen  \u2022  [Esc/P] pause', W / 2, 288);
+    if (gamepad.connected) {
+        ctx.fillStyle = '#4f8'; ctx.font = '13px Courier New';
+        ctx.fillText('\u{1F3AE} Controller: L-Stick move \u2022 R-Stick aim \u2022 A dash \u2022 Start pause', W / 2, 306);
+    }
 
     // Continue button (if save exists)
     const hasSave = hasSavedGame();
@@ -2162,7 +2342,7 @@ function renderCharSelect() {
     ctx.fillText('SELECT YOUR CHARACTER', W / 2, 48);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#667'; ctx.font = '13px Courier New';
-    ctx.fillText('Click or press [1-6] to choose', W / 2, 70);
+    ctx.fillText(gamepad.connected ? 'D-pad to select, A to confirm' : 'Click or press [1-6] to choose', W / 2, 70);
 
     // 2x3 grid of character cards
     const cw = 230, ch = 160, gapX = 18, gapY = 14;
@@ -2179,7 +2359,7 @@ function renderCharSelect() {
         const col = idx % cols, row = Math.floor(idx / cols);
         const x = startX + col * (cw + gapX);
         const y = startY + row * (ch + gapY);
-        const hover = hoveredCharIdx === idx && !locked;
+        const hover = (hoveredCharIdx === idx || (gamepad.connected && gamepad.shopCursor === idx)) && !locked;
 
         // Card background
         ctx.fillStyle = locked ? '#0a0a14' : (hover ? '#1a2255' : '#0f1530');
