@@ -498,9 +498,9 @@ const MAX_WAVES = 20;
 
 // Difficulty system
 const DIFFICULTIES = {
-    normal:     { label: 'Normal',     color: '#4a4', desc: 'A fair fight. Recommended for first runs.',        hpMult: 1.0, dmgMult: 1.0, spawnMult: 1.0, matMult: 1.0,  doubleBoss: false, eliteWaveStart: 8,  eliteChance: 0.15 },
-    hard:       { label: 'Hard',       color: '#da4', desc: 'Enemies hit harder, more elites, less materials.', hpMult: 1.5, dmgMult: 1.4, spawnMult: 1.25, matMult: 0.8, doubleBoss: false, eliteWaveStart: 5,  eliteChance: 0.25 },
-    impossible: { label: 'Impossible', color: '#d33', desc: 'Double bosses. Relentless elites. Good luck.',     hpMult: 2.5, dmgMult: 2.0, spawnMult: 1.5,  matMult: 0.6, doubleBoss: true,  eliteWaveStart: 3,  eliteChance: 0.40 },
+    normal:     { label: 'Normal',     color: '#4a4', desc: 'Balanced. Start here.',       hpMult: 1.0, dmgMult: 1.0, spawnMult: 1.0, matMult: 1.0,  doubleBoss: false, eliteWaveStart: 8,  eliteChance: 0.15 },
+    hard:       { label: 'Hard',       color: '#da4', desc: '+50% HP, more elites.',      hpMult: 1.5, dmgMult: 1.4, spawnMult: 1.25, matMult: 0.8, doubleBoss: false, eliteWaveStart: 5,  eliteChance: 0.25 },
+    impossible: { label: 'Impossible', color: '#d33', desc: '2x bosses. Good luck.',      hpMult: 2.5, dmgMult: 2.0, spawnMult: 1.5,  matMult: 0.6, doubleBoss: true,  eliteWaveStart: 3,  eliteChance: 0.40 },
 };
 const DIFF_ORDER = ['normal', 'hard', 'impossible'];
 let selectedDifficulty = 'normal';
