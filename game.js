@@ -505,6 +505,16 @@ const DIFFICULTIES = {
 const DIFF_ORDER = ['normal', 'hard', 'impossible'];
 let selectedDifficulty = 'normal';
 let hoveredDiffIdx = -1;
+
+// Challenge modifiers — optional toggles for extra difficulty/variety
+const CHALLENGE_MODS = {
+    glass_cannon: { label: 'Glass Cannon', emoji: '\u{1F52B}', desc: '2x DMG, 50% HP',      apply: p => { p.stats.damage *= 2; p.maxHp = Math.floor(p.maxHp * 0.5); p.hp = p.maxHp; } },
+    speed_demon:  { label: 'Speed Demon',  emoji: '\u26A1',     desc: '+50% speed, -30% DMG', apply: p => { p.stats.speed *= 1.5; p.stats.damage *= 0.7; } },
+    no_shop:      { label: 'No Shop',      emoji: '\u{1F6AB}',  desc: 'Skip all shops',       apply: () => {} },
+};
+const CHALLENGE_ORDER = ['glass_cannon', 'speed_demon', 'no_shop'];
+let activeChallenges = {};
+let hoveredChalIdx = -1;
 let waveTransitionTimer = 0;
 let screenShake = { x: 0, y: 0, t: 0, mag: 0 };
 
@@ -527,6 +537,16 @@ function showTutorial(id, text, duration) {
     tutorialTip = { text, t: duration || 5.0, mt: duration || 5.0 };
 }
 let tutorialTip = null;
+
+// Kill feed system
+const killFeed = [];
+const KILL_FEED_MAX = 5;
+function addKillFeed(name, emoji, isElite, isBoss) {
+    const prefix = isBoss ? '\u{1F480} ' : isElite ? '\u{1F451} ' : '';
+    const color = isBoss ? '#ff4444' : isElite ? '#ffaa00' : '#aaa';
+    killFeed.push({ text: `${prefix}${emoji} ${name}`, color, t: 3.0 });
+    if (killFeed.length > KILL_FEED_MAX) killFeed.shift();
+}
 
 // Combo system globals
 let comboCount = 0;
@@ -707,12 +727,12 @@ function generateEnvProps(env) {
 const WEAPONS = {
     stapler: { id: 'stapler', name: 'Stapler', emoji: '\u{1F4CE}', color: '#888', baseDmg: 14, baseRate: 1.8, range: 280, projSpeed: 420, type: 'ranged' },
     rubberband: { id: 'rubberband', name: 'Rubber Band', emoji: '\u{1F517}', color: '#ff0', baseDmg: 5, baseRate: 5.5, range: 240, projSpeed: 580, type: 'ranged' },
-    coffeemug: { id: 'coffeemug', name: 'Coffee Mug', emoji: '\u2615', color: '#8B4513', baseDmg: 35, baseRate: 0.7, range: 220, projSpeed: 260, aoe: 55, type: 'ranged' },
-    keyboard: { id: 'keyboard', name: 'Keyboard', emoji: '\u2328\uFE0F', color: '#aaa', baseDmg: 28, baseRate: 1.3, range: 68, type: 'melee' },
+    coffeemug: { id: 'coffeemug', name: 'Coffee Mug', emoji: '\u2615', color: '#8B4513', baseDmg: 35, baseRate: 0.7, range: 220, projSpeed: 260, aoe: 55, type: 'ranged', recoil: 3 },
+    keyboard: { id: 'keyboard', name: 'Keyboard', emoji: '\u2328\uFE0F', color: '#aaa', baseDmg: 28, baseRate: 1.3, range: 68, type: 'melee', recoil: 1 },
     usb: { id: 'usb', name: 'USB Drive', emoji: '\u{1F4BE}', color: '#0af', baseDmg: 9, baseRate: 2, range: 80, type: 'orbital', orbitR: 72, orbitSpd: 3.2 },
     laser: { id: 'laser', name: 'Laser Pointer', emoji: '\u{1F534}', color: '#f00', baseDmg: 9, baseRate: 4.5, range: 210, projSpeed: 720, pierce: 3, type: 'ranged' },
     sticky: { id: 'sticky', name: 'Sticky Note', emoji: '\u{1F4DD}', color: '#ffe44d', baseDmg: 5, baseRate: 2, range: 250, projSpeed: 210, slow: 0.45, dotDps: 4, dotDur: 3, type: 'ranged' },
-    tpsreport: { id: 'tpsreport', name: 'TPS Report', emoji: '\u{1F4C4}', color: '#ddd', baseDmg: 90, baseRate: 0.38, range: 200, projSpeed: 175, aoe: 95, type: 'ranged' },
+    tpsreport: { id: 'tpsreport', name: 'TPS Report', emoji: '\u{1F4C4}', color: '#ddd', baseDmg: 90, baseRate: 0.38, range: 200, projSpeed: 175, aoe: 95, type: 'ranged', recoil: 5 },
 };
 
 // ============================================================
@@ -1005,6 +1025,14 @@ function fireWeapon(w, target) {
     sfxShoot(w.id);
     const n = norm(target.x - player.x, target.y - player.y);
     addMuzzleFlash(player.x + n.x * (player.radius + 8), player.y + n.y * (player.radius + 8), n.x, n.y, w.color);
+    // Weapon recoil — push player back slightly for heavy weapons
+    const recoil = w.recoil || 0;
+    if (recoil > 0) {
+        player.x -= n.x * recoil;
+        player.y -= n.y * recoil;
+        player.x = clamp(player.x, player.radius, W - player.radius);
+        player.y = clamp(player.y, player.radius, H - player.radius);
+    }
     const speed = w.projSpeed || 300;
     const burstCount = w.burstCount || 1;
     const burstSpread = w.burstSpread || 0;
@@ -1071,7 +1099,7 @@ function spawnEnemy(type, x, y) {
         spd: Math.round(def.spd * spdScale),
         contactDps: def.contactDps * scale * diff.dmgMult,
         kbx: 0, kby: 0,
-        flashT: 0,
+        flashT: 0, staggerT: 0,
         slowT: 0, slowMult: 1,
         dotT: 0, dotDps: 0, dotTick: 0,
         aiTimer: rand(1, 3),
@@ -1087,6 +1115,8 @@ function enemyTakeDamage(e, dmg, skipKnockback) {
     if (e.dead) return;
     e.hp -= dmg;
     e.flashT = FLASH_EFFECTS_ENABLED ? 0.12 : 0;
+    // Stagger: brief movement pause on hit (bosses resist)
+    e.staggerT = e.isBoss ? 0.03 : (e.isElite ? 0.08 : 0.12);
     stats.damageDealt += dmg;
     // Scale damage numbers: big hits get bigger text and red color
     const dmgVal = Math.floor(dmg);
@@ -1135,8 +1165,11 @@ function enemyDie(e) {
     addDeathParticles(e);
     sfxEnemyDie();
     addShake(e.isBoss ? 8 : e.isElite ? 5 : 3, e.isBoss ? 0.3 : 0.15);
-    // Hit stop: brief frame freeze on kills for impact
     triggerHitStop(e.isBoss ? 0.12 : e.isElite ? 0.05 : 0.02);
+    // Kill feed (only show elites, bosses, and occasional regular kills)
+    if (e.isBoss || e.isElite || Math.random() < 0.1) {
+        addKillFeed(e.name || e.type, e.emoji, e.isElite, e.isBoss);
+    }
 }
 
 function updateEnemies(dt) {
@@ -1149,6 +1182,7 @@ function updateEnemies(dt) {
         e.y = clamp(e.y, e.radius, H - e.radius);
         pushOutRect(e, e.radius);
         if (e.flashT > 0) e.flashT -= dt;
+        if (e.staggerT > 0) e.staggerT -= dt;
         if (e.slowT > 0) { e.slowT -= dt; if (e.slowT <= 0) e.slowMult = 1; }
         if (e.dotT > 0) {
             e.dotT -= dt; e.dotTick -= dt;
@@ -1160,6 +1194,13 @@ function updateEnemies(dt) {
 }
 
 function updateEnemyAI(e, dt) {
+    // Stagger: skip AI movement while staggered (still takes knockback)
+    if (e.staggerT > 0) {
+        // Apply knockback decay even while staggered
+        e.x += e.kbx * dt * 4; e.y += e.kby * dt * 4;
+        e.kbx *= Math.max(0, 1 - 8 * dt); e.kby *= Math.max(0, 1 - 8 * dt);
+        return;
+    }
     const dx = player.x - e.x, dy = player.y - e.y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
     const spd = e.spd * e.slowMult;
@@ -1697,6 +1738,10 @@ function startNewGame(charId) {
     resetStats();
     runStartTime = performance.now();
     runElapsedTime = 0;
+    // Apply challenge modifiers
+    for (const cId of CHALLENGE_ORDER) {
+        if (activeChallenges[cId]) CHALLENGE_MODS[cId].apply(player);
+    }
     wave = 1;
     setGameState(STATE.PLAYING);
     startWave();
@@ -1711,6 +1756,8 @@ function update(dt) {
     updateParticles(dt);
     // Tutorial tip timer
     if (tutorialTip) { tutorialTip.t -= dt; if (tutorialTip.t <= 0) tutorialTip = null; }
+    // Kill feed timer
+    for (let i = killFeed.length - 1; i >= 0; i--) { killFeed[i].t -= dt; if (killFeed[i].t <= 0) killFeed.splice(i, 1); }
 
     // Results screen animation timer
     if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && runResults) {
@@ -1806,7 +1853,16 @@ function update(dt) {
             if (magnetTimer <= 0) magnetActive = false;
         }
 
-        if (waveTransitionTimer <= 0) setGameState(STATE.SHOP);
+        if (waveTransitionTimer <= 0) {
+            if (activeChallenges.no_shop) {
+                // Skip shop entirely — go straight to next wave
+                wave++;
+                if (wave > MAX_WAVES) { setGameState(STATE.VICTORY); }
+                else { startWave(); }
+            } else {
+                setGameState(STATE.SHOP);
+            }
+        }
     }
 }
 
@@ -1848,6 +1904,7 @@ function render() {
             renderComboDisplay();
             renderDashCooldown();
             renderRelicBar();
+            renderKillFeed();
             if (wave % 5 === 0 && enemies.find(e => e.isBoss)) renderBossBar();
             // Wave announcement overlay
             renderWaveAnnouncement();
@@ -2024,10 +2081,13 @@ function renderEnemies() {
             ctx.save();
             if (anim.alpha !== undefined) ctx.globalAlpha = anim.alpha;
             if (e.flashT > 0) ctx.filter = 'brightness(4)';
+            else if (e.staggerT > 0) ctx.filter = 'brightness(2.5) saturate(0.5)';
             else if (e.slowT > 0) ctx.filter = 'hue-rotate(200deg) brightness(1.3)';
 
             ctx.translate(e.x, e.y);
-            ctx.scale(anim.sx || 1, anim.sy || 1);
+            // Squish when staggered
+            const staggerSquish = e.staggerT > 0 ? 0.85 : 1;
+            ctx.scale((anim.sx || 1) * (2 - staggerSquish), (anim.sy || 1) * staggerSquish);
 
             // Elite glow
             if (e.isElite) {
@@ -2114,12 +2174,35 @@ function renderSpawnWarnings() {
 }
 
 function renderDashAfterimages() {
-    for (const ai of dashAfterimages) {
-        const alpha = ai.t / 0.3;
+    for (let i = 0; i < dashAfterimages.length; i++) {
+        const ai = dashAfterimages[i];
+        const progress = ai.t / 0.3; // 1 = fresh, 0 = fading
         ctx.save();
-        ctx.globalAlpha = alpha * 0.4;
-        ctx.fillStyle = '#4488ff';
-        ctx.beginPath(); ctx.arc(ai.x, ai.y, player.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = progress * 0.5;
+        // Blue-cyan gradient that shifts as it fades
+        const hue = 200 + (1 - progress) * 40; // shift from blue to cyan
+        ctx.fillStyle = `hsl(${hue}, 80%, ${50 + (1 - progress) * 20}%)`;
+        ctx.shadowColor = '#4488ff'; ctx.shadowBlur = 8 * progress;
+        // Scale down as it fades
+        const scale = 0.7 + progress * 0.3;
+        ctx.beginPath(); ctx.arc(ai.x, ai.y, player.radius * scale, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+    // Speed trail while dashing
+    if (player && player.isDashing) {
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+        ctx.shadowColor = '#4488ff'; ctx.shadowBlur = 10;
+        if (dashAfterimages.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(dashAfterimages[0].x, dashAfterimages[0].y);
+            for (let i = 1; i < dashAfterimages.length; i++) {
+                ctx.lineTo(dashAfterimages[i].x, dashAfterimages[i].y);
+            }
+            ctx.lineTo(player.x, player.y);
+            ctx.stroke();
+        }
         ctx.restore();
     }
 }
@@ -2394,6 +2477,21 @@ function renderBossHPBar() {
         ctx.fillStyle = '#ff8800'; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'right';
         ctx.fillText(`PHASE ${boss.phase}`, bx + barW, by - 4);
     }
+}
+
+function renderKillFeed() {
+    if (killFeed.length === 0) return;
+    ctx.save();
+    let ky = 80;
+    for (let i = killFeed.length - 1; i >= 0; i--) {
+        const kf = killFeed[i];
+        const alpha = kf.t < 0.5 ? kf.t / 0.5 : 1;
+        ctx.globalAlpha = alpha * 0.7;
+        ctx.fillStyle = kf.color; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(kf.text, 10, ky);
+        ky += 14;
+    }
+    ctx.restore();
 }
 
 function renderTutorialTip() {
@@ -2833,6 +2931,35 @@ function renderCharSelect() {
             ctx.fillText('\u2713', bx + diffBtnW - 14, by + 14);
         }
     }
+
+    // Challenge modifiers
+    const chalY = diffY + diffBtnH + 16;
+    ctx.fillStyle = '#889'; ctx.font = '11px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('MODIFIERS (optional)', W / 2, chalY);
+
+    const chalBtnW = 140, chalBtnH = 30, chalGap = 10;
+    const chalTotalW = CHALLENGE_ORDER.length * chalBtnW + (CHALLENGE_ORDER.length - 1) * chalGap;
+    const chalStartX = (W - chalTotalW) / 2;
+
+    for (let i = 0; i < CHALLENGE_ORDER.length; i++) {
+        const cId = CHALLENGE_ORDER[i];
+        const c = CHALLENGE_MODS[cId];
+        const cx = chalStartX + i * (chalBtnW + chalGap);
+        const cy = chalY + 6;
+        const active = !!activeChallenges[cId];
+        const hover = hoveredChalIdx === i;
+
+        ctx.fillStyle = active ? '#2a1a40' : (hover ? '#161628' : '#0d0d18');
+        ctx.strokeStyle = active ? '#aa66ff' : (hover ? '#445' : '#2a2a3a');
+        ctx.lineWidth = active ? 2 : 1;
+        ctx.beginPath(); ctx.roundRect(cx, cy, chalBtnW, chalBtnH, 4); ctx.fill(); ctx.stroke();
+
+        ctx.fillStyle = active ? '#cc88ff' : '#778';
+        ctx.font = '10px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText(`${c.emoji} ${c.label}`, cx + chalBtnW / 2, cy + 13);
+        ctx.fillStyle = active ? '#aa88cc' : '#556'; ctx.font = '8px Courier New';
+        ctx.fillText(c.desc, cx + chalBtnW / 2, cy + 24);
+    }
 }
 
 function renderGameOver() { renderResultsScreen(); }
@@ -2908,6 +3035,18 @@ canvas.addEventListener('mousemove', () => {
                 hoveredDiffIdx = i;
             }
         }
+        // Challenge modifier hover
+        const chalY = diffY + diffBtnH + 22;
+        const chalBtnW = 140, chalBtnH = 30, chalGap = 10;
+        const chalTotalW = CHALLENGE_ORDER.length * chalBtnW + (CHALLENGE_ORDER.length - 1) * chalGap;
+        const chalStartX = (W - chalTotalW) / 2;
+        hoveredChalIdx = -1;
+        for (let i = 0; i < CHALLENGE_ORDER.length; i++) {
+            const cx = chalStartX + i * (chalBtnW + chalGap);
+            if (mouse.x >= cx && mouse.x <= cx + chalBtnW && mouse.y >= chalY && mouse.y <= chalY + chalBtnH) {
+                hoveredChalIdx = i;
+            }
+        }
     }
 });
 
@@ -2958,6 +3097,19 @@ canvas.addEventListener('click', () => {
             const by = diffY;
             if (mx >= bx && mx <= bx + diffBtnW && my >= by && my <= by + diffBtnH) {
                 selectedDifficulty = DIFF_ORDER[i];
+                return;
+            }
+        }
+        // Challenge modifier clicks
+        const chalY = diffY + diffBtnH + 22;
+        const chalBtnW = 140, chalBtnH2 = 30, chalGap = 10;
+        const chalTotalW = CHALLENGE_ORDER.length * chalBtnW + (CHALLENGE_ORDER.length - 1) * chalGap;
+        const chalStartX = (W - chalTotalW) / 2;
+        for (let i = 0; i < CHALLENGE_ORDER.length; i++) {
+            const cx = chalStartX + i * (chalBtnW + chalGap);
+            if (mx >= cx && mx <= cx + chalBtnW && my >= chalY && my <= chalY + chalBtnH2) {
+                const cId = CHALLENGE_ORDER[i];
+                activeChallenges[cId] = !activeChallenges[cId];
                 return;
             }
         }
