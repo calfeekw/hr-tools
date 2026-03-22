@@ -512,6 +512,10 @@ let screenShake = { x: 0, y: 0, t: 0, mag: 0 };
 let hitStopTimer = 0;
 const HITSTOP_ENABLED = true;
 
+// Death slow-motion
+let deathSlowMo = 0;
+let deathSlowMoMax = 0;
+
 // Combo system globals
 let comboCount = 0;
 let comboTimer = 0;
@@ -763,7 +767,7 @@ function playerTakeDamage(amt) {
     addFloating(player.x, player.y - 20, `-${Math.floor(dmg)}`, '#f44');
     sfxPlayerHurt();
     addShake(5, 0.25);
-    if (player.hp <= 0) { player.hp = 0; setGameState(STATE.GAME_OVER); }
+    if (player.hp <= 0) { player.hp = 0; deathSlowMo = 0.8; deathSlowMoMax = 0.8; addShake(10, 0.5); triggerHitStop(0.15); }
 }
 
 // Contact damage bypasses invincibility — continuous bleed when touching enemies
@@ -772,7 +776,7 @@ function playerTakeContactDamage(dps, dt) {
     const dmg = Math.max(0, dps - player.stats.armor * 0.4) * dt;
     if (dmg <= 0) return;
     player.hp -= dmg;
-    if (player.hp <= 0) { player.hp = 0; setGameState(STATE.GAME_OVER); }
+    if (player.hp <= 0) { player.hp = 0; deathSlowMo = 0.8; deathSlowMoMax = 0.8; addShake(10, 0.5); triggerHitStop(0.15); }
 }
 function playerHeal(amt) { player.hp = Math.min(player.maxHp, player.hp + amt); }
 
@@ -1072,7 +1076,13 @@ function enemyTakeDamage(e, dmg, skipKnockback) {
     e.hp -= dmg;
     e.flashT = FLASH_EFFECTS_ENABLED ? 0.12 : 0;
     stats.damageDealt += dmg;
-    addFloating(e.x + rand(-8, 8), e.y - e.radius - 4, Math.floor(dmg).toString(), '#fff');
+    // Scale damage numbers: big hits get bigger text and red color
+    const dmgVal = Math.floor(dmg);
+    const isCrit = dmgVal >= 50;
+    const isHuge = dmgVal >= 100;
+    const dmgColor = isHuge ? '#ff4444' : isCrit ? '#ffaa00' : '#fff';
+    const dmgScale = isHuge ? 2.0 : isCrit ? 1.5 : clamp(0.8 + dmgVal / 80, 0.8, 1.3);
+    addFloating(e.x + rand(-8, 8), e.y - e.radius - 4, dmgVal.toString(), dmgColor, dmgScale);
     if (player.stats.lifesteal > 0) playerHeal(dmg * player.stats.lifesteal);
     // Small knockback away from player on all hits (unless skipKnockback, e.g. DOT)
     if (!skipKnockback && !e.isBoss) {
@@ -1403,7 +1413,7 @@ const DEATH_PARTICLES = {
     accountant: { colors: ['#228833', '#fff', '#88cc88'], shape: 'rect', count: 8, sizeMin: 3, sizeMax: 6 },  // spreadsheet cells
 };
 
-function addFloating(x, y, text, color) { floaters.push({ x, y, text, color, vy: -72, t: 1.0, mt: 1.0 }); }
+function addFloating(x, y, text, color, scale) { floaters.push({ x, y, text, color, vy: -72, t: 1.0, mt: 1.0, scale: scale || 1.0 }); }
 
 function addDeathParticles(e) {
     const cfg = DEATH_PARTICLES[e.type] || { colors: [e.color], shape: 'circle', count: 6, sizeMin: 3, sizeMax: 7 };
@@ -1656,6 +1666,7 @@ function startNewGame(charId) {
     enemies = []; bullets = []; enemyBullets = []; xpOrbs = []; matDrops = []; particles = []; floaters = [];
     dashAfterimages = [];
     hitStopTimer = 0;
+    deathSlowMo = 0; deathSlowMoMax = 0;
     comboCount = 0; comboTimer = 0;
     comboMilestoneText = ''; comboMilestoneTimer = 0;
     waveAnnounceTimer = 0;
@@ -1691,6 +1702,16 @@ function update(dt) {
 
     if (gameState === STATE.PLAYING) {
         if (!player) { gameState = STATE.MENU; return; }
+        // Death slow-motion countdown
+        if (deathSlowMo > 0) {
+            deathSlowMo -= dt;
+            dt *= 0.15; // Slow everything to 15% speed
+            if (deathSlowMo <= 0) {
+                deathSlowMo = 0;
+                setGameState(STATE.GAME_OVER);
+                return;
+            }
+        }
         // Hit stop: freeze gameplay for dramatic impact
         if (hitStopTimer > 0) {
             hitStopTimer -= dt;
@@ -1787,10 +1808,21 @@ function render() {
             renderPickupsAndParticles();
             renderBullets();
             renderEnemies();
+            renderSpawnWarnings();
             renderDashAfterimages();
             renderPlayer();
             renderOrbitalWeapons();
             renderFloaters();
+            // Death slow-mo overlay
+            if (deathSlowMo > 0) {
+                const progress = 1 - deathSlowMo / deathSlowMoMax;
+                ctx.save();
+                ctx.fillStyle = `rgba(0,0,0,${progress * 0.5})`;
+                ctx.fillRect(0, 0, W, H);
+                ctx.fillStyle = `rgba(255,0,0,${0.15 * (1 - progress)})`;
+                ctx.fillRect(0, 0, W, H);
+                ctx.restore();
+            }
             // Danger vignette (before HUD)
             renderDangerVignette();
             renderHUD();
@@ -1911,6 +1943,20 @@ function renderPickupsAndParticles() {
 function renderBullets() {
     for (const b of bullets) {
         ctx.save();
+        // Projectile trail
+        const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+        if (speed > 50) {
+            const trailLen = Math.min(speed * 0.04, 18);
+            const nx = -b.vx / speed, ny = -b.vy / speed;
+            const grad = ctx.createLinearGradient(b.x, b.y, b.x + nx * trailLen, b.y + ny * trailLen);
+            grad.addColorStop(0, b.weapon.color + 'aa');
+            grad.addColorStop(1, b.weapon.color + '00');
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = b.radius * 1.2;
+            ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x + nx * trailLen, b.y + ny * trailLen); ctx.stroke();
+        }
+
         ctx.fillStyle = b.weapon.color;
         ctx.shadowColor = b.weapon.color; ctx.shadowBlur = 6;
         if (b.weapon.id === 'coffeemug') {
@@ -1993,6 +2039,44 @@ function renderEnemies() {
     }
 }
 
+function renderSpawnWarnings() {
+    // Show red arrow indicators for enemies near screen edges (off-screen or just entering)
+    const margin = 30;
+    for (const e of enemies) {
+        if (e.dead) continue;
+        const offScreen = e.x < -5 || e.x > W + 5 || e.y < -5 || e.y > H + 5;
+        if (!offScreen) continue;
+
+        // Clamp indicator position to screen edge
+        const ix = clamp(e.x, margin, W - margin);
+        const iy = clamp(e.y, margin, H - margin);
+
+        ctx.save();
+        ctx.translate(ix, iy);
+        const angle = Math.atan2(e.y - iy, e.x - ix);
+        ctx.rotate(angle);
+
+        // Pulsing red arrow
+        const pulse = 0.6 + Math.sin(performance.now() / 200) * 0.4;
+        ctx.globalAlpha = pulse * (e.isBoss ? 1.0 : e.isElite ? 0.8 : 0.5);
+        ctx.fillStyle = e.isBoss ? '#ff0000' : e.isElite ? '#ffaa00' : '#ff4444';
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(-5, -6);
+        ctx.lineTo(-5, 6);
+        ctx.closePath();
+        ctx.fill();
+
+        // Boss/elite: show emoji too
+        if (e.isBoss || e.isElite) {
+            ctx.rotate(-angle); // Undo rotation for text
+            ctx.font = '12px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(e.emoji, 0, 0);
+        }
+        ctx.restore();
+    }
+}
+
 function renderDashAfterimages() {
     for (const ai of dashAfterimages) {
         const alpha = ai.t / 0.3;
@@ -2035,9 +2119,15 @@ function renderOrbitalWeapons() {
 function renderFloaters() {
     for (const f of floaters) {
         const alpha = clamp(f.t / f.mt, 0, 1);
+        const s = f.scale || 1.0;
+        // Pop-in effect: scale up briefly then settle
+        const age = f.mt - f.t;
+        const popScale = age < 0.1 ? 1 + (1 - age / 0.1) * 0.3 * s : 1;
+        const fontSize = Math.round(14 * s * popScale);
         ctx.save(); ctx.globalAlpha = alpha;
-        ctx.fillStyle = f.color; ctx.font = 'bold 14px Courier New';
-        ctx.textAlign = 'center'; ctx.shadowColor = f.color; ctx.shadowBlur = 4;
+        ctx.fillStyle = f.color; ctx.font = `bold ${fontSize}px Courier New`;
+        ctx.textAlign = 'center'; ctx.shadowColor = f.color; ctx.shadowBlur = s > 1.3 ? 8 : 4;
+        if (s >= 2.0) { ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeText(f.text, f.x, f.y); }
         ctx.fillText(f.text, f.x, f.y); ctx.restore();
     }
 }
@@ -2309,12 +2399,37 @@ function renderBossBar() {
 }
 
 function renderWaveEnd() {
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0, 0, W, H);
+
+    // Title with glow
     ctx.fillStyle = '#ffff00'; ctx.font = 'bold 42px Courier New'; ctx.textAlign = 'center';
     ctx.shadowColor = '#ff0'; ctx.shadowBlur = 20;
-    ctx.fillText(`WAVE ${wave} CLEARED!`, W / 2, H / 2 - 20);
-    ctx.fillStyle = '#aaf'; ctx.font = '18px Courier New'; ctx.shadowBlur = 0;
-    ctx.fillText('Opening shop...', W / 2, H / 2 + 25);
+    const isBossWave = wave % 5 === 0;
+    ctx.fillText(isBossWave ? `\u{1F3C6} BOSS DEFEATED!` : `WAVE ${wave} CLEARED!`, W / 2, H / 2 - 60);
+    ctx.shadowBlur = 0;
+
+    // Wave stats tally
+    const elapsed = waveTransitionTimer > 0 ? (1.8 - waveTransitionTimer) : 1.8;
+    const showKills = elapsed > 0.2;
+    const showMats = elapsed > 0.5;
+    const showCombo = elapsed > 0.8;
+
+    ctx.font = '16px Courier New';
+    if (showKills) {
+        ctx.fillStyle = '#aaf';
+        ctx.fillText(`\u{1F47E} Kills: ${stats.kills}`, W / 2, H / 2 - 18);
+    }
+    if (showMats) {
+        ctx.fillStyle = '#ffdd00';
+        ctx.fillText(`\u{1F4B0} Materials: ${player.materials}`, W / 2, H / 2 + 8);
+    }
+    if (showCombo) {
+        ctx.fillStyle = '#f84';
+        ctx.fillText(`\u{1F525} Best Combo: ${stats.highestCombo}x`, W / 2, H / 2 + 34);
+    }
+
+    ctx.fillStyle = '#667'; ctx.font = '14px Courier New';
+    ctx.fillText('Opening shop...', W / 2, H / 2 + 70);
 }
 
 function renderShop() {
