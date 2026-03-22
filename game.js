@@ -216,14 +216,20 @@ function pollGamepad() {
         if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.min(CHAR_ORDER.length - 1, gamepad.shopCursor + 1);
     }
 
-    // LB (4) / RB (5) = also shop nav
+    // LB (4) / RB (5) = shop nav, or difficulty cycle on char select
     if (gpPressed(gp, 4)) {
         if (gameState === STATE.SHOP) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
-        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.max(0, gamepad.shopCursor - 1);
+        else if (gameState === STATE.CHAR_SELECT) {
+            const curIdx = DIFF_ORDER.indexOf(selectedDifficulty);
+            if (curIdx > 0) selectedDifficulty = DIFF_ORDER[curIdx - 1];
+        }
     }
     if (gpPressed(gp, 5)) {
         if (gameState === STATE.SHOP) gamepad.shopCursor = Math.min(3, gamepad.shopCursor + 1);
-        if (gameState === STATE.CHAR_SELECT) gamepad.shopCursor = Math.min(CHAR_ORDER.length - 1, gamepad.shopCursor + 1);
+        else if (gameState === STATE.CHAR_SELECT) {
+            const curIdx = DIFF_ORDER.indexOf(selectedDifficulty);
+            if (curIdx < DIFF_ORDER.length - 1) selectedDifficulty = DIFF_ORDER[curIdx + 1];
+        }
     }
 
     // Right trigger (7) = Dash (alternative)
@@ -489,6 +495,16 @@ const STATE = { MENU: 'menu', CHAR_SELECT: 'char_select', PLAYING: 'playing', WA
 let gameState = STATE.MENU;
 let wave = 0;
 const MAX_WAVES = 20;
+
+// Difficulty system
+const DIFFICULTIES = {
+    normal:     { label: 'Normal',     color: '#4a4', desc: 'A fair fight. Recommended for first runs.',        hpMult: 1.0, dmgMult: 1.0, spawnMult: 1.0, matMult: 1.0,  doubleBoss: false, eliteWaveStart: 8,  eliteChance: 0.15 },
+    hard:       { label: 'Hard',       color: '#da4', desc: 'Enemies hit harder, more elites, less materials.', hpMult: 1.5, dmgMult: 1.4, spawnMult: 1.25, matMult: 0.8, doubleBoss: false, eliteWaveStart: 5,  eliteChance: 0.25 },
+    impossible: { label: 'Impossible', color: '#d33', desc: 'Double bosses. Relentless elites. Good luck.',     hpMult: 2.5, dmgMult: 2.0, spawnMult: 1.5,  matMult: 0.6, doubleBoss: true,  eliteWaveStart: 3,  eliteChance: 0.40 },
+};
+const DIFF_ORDER = ['normal', 'hard', 'impossible'];
+let selectedDifficulty = 'normal';
+let hoveredDiffIdx = -1;
 let waveTransitionTimer = 0;
 let screenShake = { x: 0, y: 0, t: 0, mag: 0 };
 
@@ -1022,15 +1038,18 @@ function spawnEnemy(type, x, y) {
         else { x = -25; y = rand(0, H); }
     }
     const def = ENEMY_DEFS[type];
+    const diff = DIFFICULTIES[selectedDifficulty];
     const scale    = 1 + (wave - 1) * 0.15;
     const spdScale = 1 + (wave - 1) * 0.04;
+    const hp = Math.floor(def.hp * scale * diff.hpMult);
+    const dmg = Math.round(def.dmg * scale * diff.dmgMult);
     return {
         ...def, x, y,
-        maxHp: Math.floor(def.hp * scale),
-        hp: Math.floor(def.hp * scale),
-        dmg: Math.round(def.dmg * scale),
+        maxHp: hp,
+        hp: hp,
+        dmg: dmg,
         spd: Math.round(def.spd * spdScale),
-        contactDps: def.contactDps * scale,
+        contactDps: def.contactDps * scale * diff.dmgMult,
         kbx: 0, kby: 0,
         flashT: 0,
         slowT: 0, slowMult: 1,
@@ -1072,7 +1091,7 @@ function enemyDie(e) {
 
     // Material drops with combo bonus
     const matBonus = 1 + getComboMatBonus();
-    const matMult = (player.matDropMult || 1) * matBonus;
+    const matMult = (player.matDropMult || 1) * matBonus * DIFFICULTIES[selectedDifficulty].matMult;
     xpOrbs.push({ x: e.x, y: e.y, v: e.xp });
     if (Math.random() < 0.85 + player.stats.luck * 0.05) {
         matDrops.push({ x: e.x, y: e.y, v: Math.ceil(e.mat * matMult) });
@@ -1328,10 +1347,17 @@ const WAVE_CONFIGS = (() => {
 
 function buildSpawnQueue(w) {
     const queue = [];
+    const diff = DIFFICULTIES[selectedDifficulty];
     const groups = WAVE_CONFIGS[w - 1] || [];
-    // Apply adaptive spawn modifier
+    // Apply adaptive spawn modifier + difficulty spawn multiplier
     for (const g of groups) {
-        const count = w % 5 === 0 ? g.count : Math.max(1, Math.round(g.count * adaptiveSpawnMod));
+        const isBoss = ENEMY_DEFS[g.type] && ENEMY_DEFS[g.type].isBoss;
+        let count;
+        if (isBoss) {
+            count = diff.doubleBoss ? 2 : g.count; // Double bosses on Impossible
+        } else {
+            count = Math.max(1, Math.round(g.count * adaptiveSpawnMod * diff.spawnMult));
+        }
         for (let i = 0; i < count; i++) queue.push(g.type);
     }
     return shuffle(queue);
@@ -1663,10 +1689,11 @@ function update(dt) {
         if (spawnTimer <= 0 && spawnQueue.length > 0 && enemies.length < 80) {
             const type = spawnQueue.shift();
             const e = spawnEnemy(type);
-            // Elite chance: starting wave 8, 15% per enemy, capped
+            // Elite chance: based on difficulty settings
+            const diff = DIFFICULTIES[selectedDifficulty];
             const maxElites = wave >= 15 ? 5 : 3;
             const currentElites = enemies.filter(en => en.isElite).length;
-            if (wave >= 8 && !e.isBoss && currentElites < maxElites && Math.random() < 0.15) {
+            if (wave >= diff.eliteWaveStart && !e.isBoss && currentElites < maxElites && Math.random() < diff.eliteChance) {
                 makeElite(e);
             }
             // Apply adaptive damage modifier
@@ -2148,6 +2175,12 @@ function renderHUD() {
     ctx.fillStyle = isBoss ? '#ff4444' : '#eee';
     ctx.font = `bold ${isBoss ? 15 : 16}px Courier New`; ctx.textAlign = 'center';
     ctx.fillText(isBoss ? `\u26A0 BOSS WAVE ${wave}/${MAX_WAVES} \u26A0` : `WAVE ${wave} / ${MAX_WAVES}`, W / 2, 22);
+    // Difficulty badge (only show on Hard/Impossible)
+    if (selectedDifficulty !== 'normal') {
+        const diff = DIFFICULTIES[selectedDifficulty];
+        ctx.fillStyle = diff.color; ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText(`[${diff.label.toUpperCase()}]`, W / 2, 10);
+    }
     const remaining = enemies.length + spawnQueue.length;
     ctx.fillStyle = '#f88'; ctx.font = '12px Courier New';
     ctx.fillText(`\u{1F47E} ${remaining} remaining`, W / 2, 40);
@@ -2390,7 +2423,7 @@ function renderCharSelect() {
     ctx.fillText('SELECT YOUR CHARACTER', W / 2, 48);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#667'; ctx.font = '13px Courier New';
-    ctx.fillText(gamepad.connected ? 'D-pad to select, A to confirm' : 'Click or press [1-6] to choose', W / 2, 70);
+    ctx.fillText(gamepad.connected ? 'D-pad to select, A to confirm, LB/RB difficulty' : 'Click or [1-6] to choose  \u2022  [Q/E] change difficulty', W / 2, 70);
 
     // 2x3 grid of character cards
     const cw = 230, ch = 160, gapX = 18, gapY = 14;
@@ -2459,6 +2492,45 @@ function renderCharSelect() {
         ctx.fillStyle = '#334'; ctx.font = '11px Courier New'; ctx.textAlign = 'right';
         ctx.fillText(`[${idx + 1}]`, x + cw - 8, y + 150);
     }
+
+    // Difficulty selector below characters
+    const diffY = startY + totalH + 18;
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('DIFFICULTY', W / 2, diffY);
+
+    const diffBtnW = 180, diffBtnH = 52, diffGap = 16;
+    const diffTotalW = DIFF_ORDER.length * diffBtnW + (DIFF_ORDER.length - 1) * diffGap;
+    const diffStartX = (W - diffTotalW) / 2;
+
+    for (let i = 0; i < DIFF_ORDER.length; i++) {
+        const dKey = DIFF_ORDER[i];
+        const d = DIFFICULTIES[dKey];
+        const bx = diffStartX + i * (diffBtnW + diffGap);
+        const by = diffY + 10;
+        const isSelected = selectedDifficulty === dKey;
+        const isHover = hoveredDiffIdx === i;
+
+        // Card
+        ctx.fillStyle = isSelected ? d.color + '33' : (isHover ? '#1a1a30' : '#0f1020');
+        ctx.strokeStyle = isSelected ? d.color : (isHover ? '#556' : '#333');
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.beginPath(); ctx.roundRect(bx, by, diffBtnW, diffBtnH, 6); ctx.fill(); ctx.stroke();
+
+        // Label
+        ctx.fillStyle = isSelected ? d.color : '#aaa';
+        ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+        ctx.fillText(d.label, bx + diffBtnW / 2, by + 20);
+
+        // Description
+        ctx.fillStyle = '#778'; ctx.font = '9px Courier New';
+        ctx.fillText(d.desc, bx + diffBtnW / 2, by + 36);
+
+        // Checkmark if selected
+        if (isSelected) {
+            ctx.fillStyle = d.color; ctx.font = '16px serif';
+            ctx.fillText('\u2713', bx + diffBtnW - 14, by + 14);
+        }
+    }
 }
 
 function renderGameOver() { renderResultsScreen(); }
@@ -2520,6 +2592,20 @@ canvas.addEventListener('mousemove', () => {
                 hoveredCharIdx = idx;
             }
         }
+        // Difficulty hover
+        const totalH_c = 2 * ch_h + gapY;
+        const diffY = startY + totalH_c + 28;
+        const diffBtnW = 180, diffBtnH = 52, diffGap = 16;
+        const diffTotalW = DIFF_ORDER.length * diffBtnW + (DIFF_ORDER.length - 1) * diffGap;
+        const diffStartX = (W - diffTotalW) / 2;
+        hoveredDiffIdx = -1;
+        for (let i = 0; i < DIFF_ORDER.length; i++) {
+            const bx = diffStartX + i * (diffBtnW + diffGap);
+            const by = diffY;
+            if (mouse.x >= bx && mouse.x <= bx + diffBtnW && mouse.y >= by && mouse.y <= by + diffBtnH) {
+                hoveredDiffIdx = i;
+            }
+        }
     }
 });
 
@@ -2556,6 +2642,20 @@ canvas.addEventListener('click', () => {
             if (mx >= x && mx <= x + cw && my >= y && my <= y + ch_h) {
                 if (!isCharUnlocked(CHAR_ORDER[idx])) return;
                 startNewGame(CHAR_ORDER[idx]);
+                return;
+            }
+        }
+        // Difficulty buttons
+        const totalH_c = 2 * ch_h + gapY;
+        const diffY = startY + totalH_c + 28;
+        const diffBtnW = 180, diffBtnH = 52, diffGap = 16;
+        const diffTotalW = DIFF_ORDER.length * diffBtnW + (DIFF_ORDER.length - 1) * diffGap;
+        const diffStartX = (W - diffTotalW) / 2;
+        for (let i = 0; i < DIFF_ORDER.length; i++) {
+            const bx = diffStartX + i * (diffBtnW + diffGap);
+            const by = diffY;
+            if (mx >= bx && mx <= bx + diffBtnW && my >= by && my <= by + diffBtnH) {
+                selectedDifficulty = DIFF_ORDER[i];
                 return;
             }
         }
@@ -2657,6 +2757,12 @@ window.addEventListener('keydown', e => {
         const num = parseInt(e.key);
         if (num >= 1 && num <= 6 && isCharUnlocked(CHAR_ORDER[num - 1])) {
             startNewGame(CHAR_ORDER[num - 1]);
+        }
+        // Cycle difficulty with Q/E keys
+        if (key === 'q' || key === 'e') {
+            const curIdx = DIFF_ORDER.indexOf(selectedDifficulty);
+            const newIdx = key === 'e' ? Math.min(curIdx + 1, DIFF_ORDER.length - 1) : Math.max(curIdx - 1, 0);
+            selectedDifficulty = DIFF_ORDER[newIdx];
         }
     }
 
@@ -2892,7 +2998,8 @@ function renderResultsScreen() {
 
     // Character
     ctx.fillStyle = '#aaa'; ctx.font = '16px Courier New';
-    ctx.fillText(`${r.charEmoji} ${r.character}  \u2022  Level ${r.level}`, W / 2, 95);
+    const diffLabel = selectedDifficulty !== 'normal' ? `  \u2022  ${DIFFICULTIES[selectedDifficulty].label}` : '';
+    ctx.fillText(`${r.charEmoji} ${r.character}  \u2022  Level ${r.level}${diffLabel}`, W / 2, 95);
 
     // Animated stats
     const elapsed = resultsAnimTimer;
@@ -3127,6 +3234,7 @@ function saveGame() {
         gameState: pausedFromState || gameState,
         wave,
         runElapsedTime,
+        difficulty: selectedDifficulty,
 
         // Player
         player: {
@@ -3230,6 +3338,9 @@ function loadGame() {
     try {
         const d = JSON.parse(localStorage.getItem(SAVE_KEY));
         if (!d || d.version < 2) return false;
+
+        // Restore difficulty
+        selectedDifficulty = d.difficulty || 'normal';
 
         // Restore character
         const ch = CHARACTERS[d.charId || 'developer'];
