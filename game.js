@@ -346,14 +346,14 @@ const CHARACTERS = {
     developer: {
         id: 'developer', name: 'The Developer', emoji: '\u{1F9D1}\u200D\u{1F4BB}', // 🧑‍💻
         desc: 'Balanced all-rounder.',
-        hp: 100, speed: 1.0, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
+        hp: 120, speed: 1.0, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
         startWeapon: 'stapler',
         passive: 'None', passiveDesc: 'No special passive.'
     },
     intern: {
         id: 'intern', name: 'The Intern', emoji: '\u{1F9D1}\u200D\u{1F393}', // 🧑‍🎓
         desc: 'Fast & fragile.',
-        hp: 75, speed: 1.3, damage: 0.9, atkSpd: 1.15, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
+        hp: 90, speed: 1.3, damage: 0.9, atkSpd: 1.15, range: 1.0, armor: 0, lifesteal: 0, luck: 0,
         startWeapon: 'rubberband',
         passive: 'Caffeine Rush', passiveDesc: '+30% speed, +15% atk spd.'
     },
@@ -381,7 +381,7 @@ const CHARACTERS = {
     hrrep: {
         id: 'hrrep', name: 'HR Rep', emoji: '\u{1F4CB}', // 📋
         desc: 'Sustain fighter.',
-        hp: 85, speed: 1.05, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0.08, luck: 0,
+        hp: 100, speed: 1.05, damage: 1.0, atkSpd: 1.0, range: 1.0, armor: 0, lifesteal: 0.08, luck: 0,
         startWeapon: 'sticky',
         passive: 'Compliance', passiveDesc: '+8% lifesteal, +5% speed.'
     }
@@ -516,7 +516,7 @@ function createPlayer(charId) {
     return {
         x: W / 2, y: H / 2,
         radius: 16,
-        baseSpeed: 165,
+        baseSpeed: 180,
         hp: ch.hp, maxHp: ch.hp,
         xp: 0, xpToNext: 25, level: 1,
         materials: 0,
@@ -814,12 +814,12 @@ function fireWeapon(w, target) {
 let enemies = [];
 
 const ENEMY_DEFS = {
-    intern:    { name: 'Intern',        emoji: '\u{1F9D1}\u200D\u{1F4BC}', color: '#5577cc', radius: 16, hp: 55,  spd: 88,  dmg: 10, contactDps: 16,  xp: 3, mat: 1, ai: 'chase' },
-    manager:   { name: 'Mgr',          emoji: '\u{1F624}',   color: '#cc6633', radius: 18, hp: 95,  spd: 105, dmg: 18, contactDps: 28,  xp: 5, mat: 2, ai: 'chase' },
-    printer:   { name: 'Printer',      emoji: '\u{1F5A8}\uFE0F',  color: '#667744', radius: 22, hp: 160, spd: 32,  dmg: 14, contactDps: 10,  xp: 7, mat: 3, ai: 'ranged' },
-    hrrep:     { name: 'HR Rep',       emoji: '\u{1F4CB}',   color: '#bb44bb', radius: 15, hp: 68,  spd: 132, dmg: 24, contactDps: 36,  xp: 6, mat: 2, ai: 'chase' },
-    itguy:     { name: 'IT Guy',       emoji: '\u{1F4BB}',   color: '#44aa77', radius: 17, hp: 85,  spd: 72,  dmg: 12, contactDps: 20,  xp: 6, mat: 3, ai: 'spawner' },
-    accountant:{ name: 'Accountant',   emoji: '\u{1F9EE}',   color: '#228833', radius: 20, hp: 140, spd: 50,  dmg: 10, contactDps: 12,  xp: 7, mat: 4, ai: 'ranged2' },
+    intern:    { name: 'Intern',        emoji: '\u{1F9D1}\u200D\u{1F4BC}', color: '#5577cc', radius: 16, hp: 40,  spd: 80,  dmg: 8,  contactDps: 10,  xp: 3, mat: 1, ai: 'chase' },
+    manager:   { name: 'Mgr',          emoji: '\u{1F624}',   color: '#cc6633', radius: 18, hp: 75,  spd: 90,  dmg: 14, contactDps: 18,  xp: 5, mat: 2, ai: 'chase' },
+    printer:   { name: 'Printer',      emoji: '\u{1F5A8}\uFE0F',  color: '#667744', radius: 22, hp: 120, spd: 30,  dmg: 10, contactDps: 8,   xp: 7, mat: 3, ai: 'ranged' },
+    hrrep:     { name: 'HR Rep',       emoji: '\u{1F4CB}',   color: '#bb44bb', radius: 15, hp: 50,  spd: 110, dmg: 16, contactDps: 22,  xp: 6, mat: 2, ai: 'chase' },
+    itguy:     { name: 'IT Guy',       emoji: '\u{1F4BB}',   color: '#44aa77', radius: 17, hp: 65,  spd: 65,  dmg: 10, contactDps: 14,  xp: 6, mat: 3, ai: 'spawner' },
+    accountant:{ name: 'Accountant',   emoji: '\u{1F9EE}',   color: '#228833', radius: 20, hp: 110, spd: 45,  dmg: 8,  contactDps: 8,   xp: 7, mat: 4, ai: 'ranged2' },
     cfo:       { name: 'THE CFO',      emoji: '\u{1F4B0}',   color: '#ccaa00', radius: 42, hp: 900, spd: 68,  dmg: 38, contactDps: 45,  xp: 60, mat: 25, ai: 'boss1', isBoss: true },
     hrdirector:{ name: 'HR DIRECTOR',  emoji: '\u{1F4CE}',   color: '#cc44cc', radius: 44, hp: 1400,spd: 62,  dmg: 32, contactDps: 40,  xp: 80, mat: 30, ai: 'boss2', isBoss: true },
     cto:       { name: 'THE CTO',      emoji: '\u2328\uFE0F',  color: '#2244cc', radius: 46, hp: 2000,spd: 72,  dmg: 30, contactDps: 45,  xp: 100,mat: 35, ai: 'boss3', isBoss: true },
@@ -835,8 +835,8 @@ function spawnEnemy(type, x, y) {
         else { x = -25; y = rand(0, H); }
     }
     const def = ENEMY_DEFS[type];
-    const scale    = 1 + (wave - 1) * 0.30;
-    const spdScale = 1 + (wave - 1) * 0.07;
+    const scale    = 1 + (wave - 1) * 0.15;
+    const spdScale = 1 + (wave - 1) * 0.04;
     return {
         ...def, x, y,
         maxHp: Math.floor(def.hp * scale),
@@ -1114,12 +1114,12 @@ const WAVE_CONFIGS = (() => {
         if (w === 10) { cfg.push([{ type: 'hrdirector', count: 1 }, { type: 'manager', count: 5 }, { type: 'hrrep', count: 4 }]); continue; }
         if (w === 15) { cfg.push([{ type: 'cto', count: 1 }, { type: 'itguy', count: 5 }, { type: 'accountant', count: 4 }]); continue; }
         if (w === 20) { cfg.push([{ type: 'ceo', count: 1 }, { type: 'manager', count: 6 }, { type: 'hrrep', count: 5 }, { type: 'accountant', count: 4 }]); continue; }
-        const groups = [{ type: 'intern', count: Math.floor(5 + w * 2.5) }];
-        if (w >= 2) groups.push({ type: 'manager', count: Math.floor(w * 1.3) });
-        if (w >= 3) groups.push({ type: 'printer', count: Math.floor((w - 2) * 0.9) });
-        if (w >= 4) groups.push({ type: 'hrrep', count: Math.floor((w - 3) * 1.0) });
-        if (w >= 6) groups.push({ type: 'itguy', count: Math.floor((w - 5) * 0.9) });
-        if (w >= 8) groups.push({ type: 'accountant', count: Math.floor((w - 7) * 0.8) });
+        const groups = [{ type: 'intern', count: Math.floor(3 + w * 1.5) }];
+        if (w >= 3) groups.push({ type: 'manager', count: Math.floor(1 + (w - 2) * 0.8) });
+        if (w >= 4) groups.push({ type: 'printer', count: Math.floor((w - 3) * 0.6) });
+        if (w >= 5) groups.push({ type: 'hrrep', count: Math.floor((w - 4) * 0.7) });
+        if (w >= 7) groups.push({ type: 'itguy', count: Math.floor((w - 6) * 0.6) });
+        if (w >= 9) groups.push({ type: 'accountant', count: Math.floor((w - 8) * 0.5) });
         cfg.push(groups);
     }
     return cfg;
@@ -1318,8 +1318,18 @@ function generateShopOptions(count = 4) {
         });
     }
 
-    const priceScale = 1 + (wave - 1) * 0.15;  // +15% cost per wave
-    const allOptions = shuffle([...available, ...weaponUpgrades, ...relicOptions]).slice(0, count);
+    const priceScale = 1 + (wave - 1) * 0.10;  // +10% cost per wave (was 15%)
+
+    // Guarantee at least 1 weapon/upgrade/relic if available, then fill with stat options
+    const weaponPool = shuffle([...weaponUpgrades, ...available.filter(u => u.cat === 'weapon'), ...relicOptions]);
+    const statPool = shuffle(available.filter(u => u.cat === 'stat'));
+    const allOptions = [];
+    // Pull at least 1 weapon/upgrade/relic option if any exist
+    if (weaponPool.length > 0) allOptions.push(weaponPool.shift());
+    // Fill remaining slots from mixed pool
+    const remaining = shuffle([...weaponPool, ...statPool]);
+    while (allOptions.length < count && remaining.length > 0) allOptions.push(remaining.shift());
+    shuffle(allOptions);
     allOptions.forEach(o => { if (o.cost > 0) o.cost = Math.ceil(o.cost * priceScale); });
     return allOptions;
 }
@@ -1993,7 +2003,7 @@ function renderShop() {
     ctx.fillText(`\u{1F4B0} ${player.materials} materials  |  [1-4] buy  [R] reroll  [Enter] continue`, W / 2, 60);
 
     // Cards
-    const cw = 170, ch = 195, gap = 12;
+    const cw = 175, ch = 200, gap = 14;
     const totalW = 4 * cw + 3 * gap;
     const sx = (W - totalW) / 2, sy = 74;
 
@@ -2011,25 +2021,32 @@ function renderShop() {
         }
 
         const canBuy = player.materials >= u.cost;
-        ctx.fillStyle = hover ? '#1a2255' : '#0f1530';
-        ctx.strokeStyle = hover ? '#66aaff' : (canBuy ? '#334488' : '#1e1e38');
-        ctx.lineWidth = hover ? 2 : 1;
+        // Category color coding for card borders
+        const catColor = u.cat === 'weapon' ? '#44aa44' : u.cat === 'upgrade' ? '#aa8822' : u.cat === 'evolution' ? '#ff44ff' : u.cat === 'relic' ? '#aa44ff' : '#4488cc';
+        ctx.fillStyle = hover ? '#182248' : '#0f1530';
+        ctx.strokeStyle = hover ? '#88ccff' : (canBuy ? catColor : '#1e1e38');
+        ctx.lineWidth = hover ? 3 : 2;
         ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); ctx.stroke();
-        if (!canBuy) { ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); }
+        if (!canBuy) { ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 8); ctx.fill(); }
 
-        ctx.font = '36px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-        ctx.fillText(u.emoji, x + cw / 2, y + 48);
+        // Category label at top
+        const catLabel = u.cat === 'weapon' ? 'WEAPON' : u.cat === 'upgrade' ? 'UPGRADE' : u.cat === 'evolution' ? 'EVOLVE' : u.cat === 'relic' ? 'RELIC' : 'STAT';
+        ctx.fillStyle = canBuy ? catColor : '#333'; ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText(catLabel, x + cw / 2, y + 14);
 
-        ctx.fillStyle = canBuy ? '#fff' : '#555'; ctx.font = 'bold 11px Courier New';
-        ctx.fillText(u.name, x + cw / 2, y + 70);
+        ctx.font = '40px serif'; ctx.textBaseline = 'alphabetic';
+        ctx.fillText(u.emoji, x + cw / 2, y + 56);
 
-        ctx.fillStyle = canBuy ? '#88aadd' : '#404060'; ctx.font = '10px Courier New';
+        ctx.fillStyle = canBuy ? '#fff' : '#555'; ctx.font = 'bold 13px Courier New';
+        ctx.fillText(u.name, x + cw / 2, y + 76);
+
+        ctx.fillStyle = canBuy ? '#aabbee' : '#404060'; ctx.font = '11px Courier New';
         const lines = wrapText(u.desc, cw - 14);
-        lines.slice(0, 4).forEach((l, li) => ctx.fillText(l, x + cw / 2, y + 86 + li * 14));
+        lines.slice(0, 4).forEach((l, li) => ctx.fillText(l, x + cw / 2, y + 94 + li * 15));
 
-        ctx.fillStyle = canBuy ? '#ffdd00' : '#552200'; ctx.font = 'bold 13px Courier New';
-        ctx.fillText(`\u{1F4B0} ${u.cost}`, x + cw / 2, y + ch - 20);
-        ctx.fillStyle = '#334'; ctx.font = '11px Courier New';
+        ctx.fillStyle = canBuy ? '#ffdd00' : '#552200'; ctx.font = 'bold 14px Courier New';
+        ctx.fillText(`\u{1F4B0} ${u.cost}`, x + cw / 2, y + ch - 22);
+        ctx.fillStyle = canBuy ? '#667' : '#334'; ctx.font = 'bold 12px Courier New';
         ctx.fillText(`[${i + 1}]`, x + cw / 2, y + ch - 6);
 
         // Weapon comparison tooltip on hover
