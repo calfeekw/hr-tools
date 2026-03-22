@@ -537,6 +537,7 @@ function showTutorial(id, text, duration) {
     tutorialTip = { text, t: duration || 5.0, mt: duration || 5.0 };
 }
 let tutorialTip = null;
+let _pendingTutorial = null; // { id, text, dur, delay }
 
 // Kill feed system
 const killFeed = [];
@@ -786,6 +787,7 @@ function playerEffectiveRate(w) { return (w.baseRate || 1) * player.stats.atkSpd
 function playerEffectiveRange(w) { return w.range * player.stats.range; }
 
 function playerTakeDamage(amt) {
+    if (player.hp <= 0 || deathSlowMo > 0) return; // Already dead
     if (player.invTimer > 0) return;
     if (player.isDashing) return;
     // Dodge chance from VPN Token relic
@@ -804,6 +806,7 @@ function playerTakeDamage(amt) {
 
 // Contact damage bypasses invincibility — continuous bleed when touching enemies
 function playerTakeContactDamage(dps, dt) {
+    if (player.hp <= 0 || deathSlowMo > 0) return; // Already dead
     if (player.isDashing) return;
     const dmg = Math.max(0, dps - player.stats.armor * 0.4) * dt;
     if (dmg <= 0) return;
@@ -1441,9 +1444,9 @@ function startWave() {
     gameState = STATE.PLAYING;
     // Wave announcement
     waveAnnounceTimer = 2.0;
-    // Tutorials
+    // Tutorials (no setTimeout — use delayed timer instead)
     if (wave === 1) showTutorial('move', 'WASD to move \u2022 Mouse to aim \u2022 Weapons auto-fire', 6);
-    if (wave === 1) setTimeout(() => showTutorial('dash', 'Press SPACE to dash through enemies!', 5), 7000);
+    if (wave === 1 && !tutorialsSeen['dash']) { _pendingTutorial = { id: 'dash', text: 'Press SPACE to dash through enemies!', dur: 5, delay: 7.0 }; }
     if (wave === 5) showTutorial('boss', '\u26A0 BOSS INCOMING! Watch for attack patterns.', 4);
 }
 
@@ -1725,6 +1728,9 @@ function startNewGame(charId) {
     dashAfterimages = [];
     hitStopTimer = 0;
     deathSlowMo = 0; deathSlowMoMax = 0;
+    tutorialTip = null;
+    _pendingTutorial = null;
+    killFeed.length = 0;
     comboCount = 0; comboTimer = 0;
     comboMilestoneText = ''; comboMilestoneTimer = 0;
     waveAnnounceTimer = 0;
@@ -1756,6 +1762,14 @@ function update(dt) {
     updateParticles(dt);
     // Tutorial tip timer
     if (tutorialTip) { tutorialTip.t -= dt; if (tutorialTip.t <= 0) tutorialTip = null; }
+    // Pending tutorial (delayed, safe — no setTimeout)
+    if (_pendingTutorial && gameState === STATE.PLAYING) {
+        _pendingTutorial.delay -= dt;
+        if (_pendingTutorial.delay <= 0) {
+            showTutorial(_pendingTutorial.id, _pendingTutorial.text, _pendingTutorial.dur);
+            _pendingTutorial = null;
+        }
+    }
     // Kill feed timer
     for (let i = killFeed.length - 1; i >= 0; i--) { killFeed[i].t -= dt; if (killFeed[i].t <= 0) killFeed.splice(i, 1); }
 
@@ -1822,6 +1836,7 @@ function update(dt) {
         }
     }
     else if (gameState === STATE.WAVE_END) {
+        if (!player) { gameState = STATE.MENU; return; }
         waveTransitionTimer -= dt;
 
         // End-of-wave magnet: pull all drops toward player
@@ -1879,6 +1894,12 @@ function render() {
     else if (gameState === STATE.CHAR_SELECT) renderCharSelect();
     else {
         renderArena();
+        // Guard: if player is null in a gameplay state, bail to menu
+        if (!player && (gameState === STATE.PLAYING || gameState === STATE.WAVE_END || gameState === STATE.SHOP || gameState === STATE.PAUSED)) {
+            gameState = STATE.MENU;
+            ctx.restore();
+            return;
+        }
         if (gameState === STATE.PLAYING || gameState === STATE.WAVE_END || gameState === STATE.PAUSED) {
             renderPickupsAndParticles();
             renderBullets();
@@ -2174,6 +2195,7 @@ function renderSpawnWarnings() {
 }
 
 function renderDashAfterimages() {
+    if (!player) return;
     for (let i = 0; i < dashAfterimages.length; i++) {
         const ai = dashAfterimages[i];
         const progress = ai.t / 0.3; // 1 = fresh, 0 = fading
@@ -2208,6 +2230,7 @@ function renderDashAfterimages() {
 }
 
 function renderPlayer() {
+    if (!player) return;
     const t = performance.now() / 1000;
     const anim = getAnimScale(player, t);
     ctx.save();
@@ -2223,6 +2246,7 @@ function renderPlayer() {
 }
 
 function renderOrbitalWeapons() {
+    if (!player) return;
     for (let i = 0; i < player.weapons.length; i++) {
         const w = player.weapons[i];
         if (w.type !== 'orbital') continue;
@@ -2270,7 +2294,7 @@ function renderDangerVignette() {
 
 // Combo display
 function renderComboDisplay() {
-    if (comboCount < 3) return;
+    if (!player || comboCount < 3) return;
     const scale = 1 + Math.sin(Date.now() * 0.008) * 0.1;
     const mult = getComboXPMultiplier();
     const fontSize = comboCount >= 10 ? 26 : 22;
@@ -2383,6 +2407,7 @@ function renderWaveAnnouncement() {
 }
 
 function renderHUD() {
+    if (!player) return;
     ctx.fillStyle = 'rgba(0,0,0,0.72)';
     ctx.fillRect(0, 0, W, 52);
 
@@ -2513,6 +2538,7 @@ function renderTutorialTip() {
 }
 
 function renderMinimap() {
+    if (!player) return;
     const mw = 100, mh = 75;
     const mx = W - mw - 8, my = 52;
     const scaleX = mw / W, scaleY = mh / H;
@@ -2552,6 +2578,7 @@ function renderMinimap() {
 }
 
 function renderWeaponBar() {
+    if (!player) return;
     const sw = 48, sh = 48, pad = 5;
     const total = 6 * (sw + pad) - pad;
     const sx = (W - total) / 2;
@@ -3674,12 +3701,10 @@ function buildEnemyGrid() {
     }
 }
 
-// Reusable array for getNearbyEnemies to avoid Set allocation per call
-const _nearbyResult = [];
-const _nearbySet = new Set();
+// Returns a NEW array each call to prevent reentrant corruption
 function getNearbyEnemies(x, y, range) {
-    _nearbyResult.length = 0;
-    _nearbySet.clear();
+    const result = [];
+    const seen = new Set();
     const minCol = clamp(Math.floor((x - range) / GRID_CELL), 0, GRID_COLS - 1);
     const maxCol = clamp(Math.floor((x + range) / GRID_CELL), 0, GRID_COLS - 1);
     const minRow = clamp(Math.floor((y - range) / GRID_CELL), 0, GRID_ROWS - 1);
@@ -3687,16 +3712,17 @@ function getNearbyEnemies(x, y, range) {
     for (let r = minRow; r <= maxRow; r++) {
         for (let c = minCol; c <= maxCol; c++) {
             const cell = spatialGrid[r * GRID_COLS + c];
+            if (!cell) continue; // Guard against undefined cells
             for (let i = 0; i < cell.length; i++) {
                 const e = cell[i];
-                if (!_nearbySet.has(e)) {
-                    _nearbySet.add(e);
-                    _nearbyResult.push(e);
+                if (!seen.has(e)) {
+                    seen.add(e);
+                    result.push(e);
                 }
             }
         }
     }
-    return _nearbyResult;
+    return result;
 }
 
 // ============================================================
@@ -4135,17 +4161,33 @@ function loop(timestamp) {
     try {
         update(dt);
         render();
+        // Reset error count on successful frame
+        if (_loopErrors > 0) _loopErrors = Math.max(0, _loopErrors - 1);
     } catch (err) {
         _loopErrors++;
-        console.error('Game loop error (wave ' + wave + ', state ' + gameState + '):', err);
-        // Attempt recovery: if stuck in PLAYING with no enemies and no spawn queue, force wave end
-        if (gameState === STATE.PLAYING && enemies.length === 0 && spawnQueue.length === 0) {
-            setGameState(STATE.WAVE_END);
+        console.error('Game loop error (wave ' + wave + ', state ' + gameState + ', errors: ' + _loopErrors + '):', err, err.stack);
+        // Attempt recovery based on state
+        try {
+            if (!player && gameState !== STATE.MENU && gameState !== STATE.CHAR_SELECT) {
+                gameState = STATE.MENU;
+                _loopErrors = 0;
+            } else if (gameState === STATE.PLAYING && enemies.length === 0 && spawnQueue.length === 0) {
+                setGameState(STATE.WAVE_END);
+            } else if (gameState === STATE.PLAYING && deathSlowMo > 0) {
+                // If stuck in death slow-mo, force game over
+                deathSlowMo = 0;
+                setGameState(STATE.GAME_OVER);
+            }
+        } catch (recoveryErr) {
+            console.error('Recovery failed:', recoveryErr);
         }
-        if (_loopErrors > 60) {
-            console.error('Too many errors, returning to menu');
+        if (_loopErrors > 30) {
+            console.error('Too many errors (' + _loopErrors + '), returning to menu');
             gameState = STATE.MENU;
             _loopErrors = 0;
+            // Reset dangerous state
+            deathSlowMo = 0; hitStopTimer = 0;
+            tutorialTip = null; _pendingTutorial = null;
         }
     }
     requestAnimationFrame(loop);
