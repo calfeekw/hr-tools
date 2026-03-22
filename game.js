@@ -2522,7 +2522,7 @@ function renderCharSelect() {
         ctx.fillText(d.label, bx + diffBtnW / 2, by + 20);
 
         // Description
-        ctx.fillStyle = '#778'; ctx.font = '9px Courier New';
+        ctx.fillStyle = isSelected ? '#ccc' : '#778'; ctx.font = '9px Courier New';
         ctx.fillText(d.desc, bx + diffBtnW / 2, by + 36);
 
         // Checkmark if selected
