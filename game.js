@@ -516,6 +516,18 @@ const HITSTOP_ENABLED = true;
 let deathSlowMo = 0;
 let deathSlowMoMax = 0;
 
+// Tutorial system (first-run tips, persist via localStorage)
+const TUTORIAL_KEY = 'officewars_tutorials';
+let tutorialsSeen = {};
+try { tutorialsSeen = JSON.parse(localStorage.getItem(TUTORIAL_KEY)) || {}; } catch { tutorialsSeen = {}; }
+function showTutorial(id, text, duration) {
+    if (tutorialsSeen[id]) return;
+    tutorialsSeen[id] = true;
+    try { localStorage.setItem(TUTORIAL_KEY, JSON.stringify(tutorialsSeen)); } catch {}
+    tutorialTip = { text, t: duration || 5.0, mt: duration || 5.0 };
+}
+let tutorialTip = null;
+
 // Combo system globals
 let comboCount = 0;
 let comboTimer = 0;
@@ -1388,6 +1400,10 @@ function startWave() {
     gameState = STATE.PLAYING;
     // Wave announcement
     waveAnnounceTimer = 2.0;
+    // Tutorials
+    if (wave === 1) showTutorial('move', 'WASD to move \u2022 Mouse to aim \u2022 Weapons auto-fire', 6);
+    if (wave === 1) setTimeout(() => showTutorial('dash', 'Press SPACE to dash through enemies!', 5), 7000);
+    if (wave === 5) showTutorial('boss', '\u26A0 BOSS INCOMING! Watch for attack patterns.', 4);
 }
 
 // ============================================================
@@ -1636,6 +1652,7 @@ function setGameState(s) {
         rerollCost = 2; rerollCount = 0;
         Object.keys(keys).forEach(k => keys[k] = false);
         mouse.down = false;
+        if (wave === 1) showTutorial('shop', 'Buy weapons & upgrades \u2022 Click cards or press [1-4]', 5);
     }
     if (s === STATE.WAVE_END) {
         waveTransitionTimer = 1.8;
@@ -1692,6 +1709,8 @@ function startNewGame(charId) {
 function update(dt) {
     pollGamepad();
     updateParticles(dt);
+    // Tutorial tip timer
+    if (tutorialTip) { tutorialTip.t -= dt; if (tutorialTip.t <= 0) tutorialTip = null; }
 
     // Results screen animation timer
     if ((gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) && runResults) {
@@ -1832,9 +1851,11 @@ function render() {
             if (wave % 5 === 0 && enemies.find(e => e.isBoss)) renderBossBar();
             // Wave announcement overlay
             renderWaveAnnouncement();
+            // Tutorial tooltip
+            renderTutorialTip();
         }
         if (gameState === STATE.WAVE_END) renderWaveEnd();
-        if (gameState === STATE.SHOP) renderShop();
+        if (gameState === STATE.SHOP) { renderShop(); renderTutorialTip(); }
         if (gameState === STATE.GAME_OVER) renderGameOver();
         if (gameState === STATE.VICTORY) renderVictory();
         if (gameState === STATE.PAUSED) renderPauseMenu();
@@ -1898,7 +1919,22 @@ function renderArena() {
 
 function renderPickupsAndParticles() {
     const t = Date.now() * 0.004;
+    const pr = player ? (player.stats.pickupRadius || 1) : 1;
+    const magnetDist = 160 * pr;
+
     for (const o of xpOrbs) {
+        const d = player ? dist(player, o) : Infinity;
+        // Magnet trail line when being pulled
+        if (d < magnetDist && player) {
+            ctx.save();
+            ctx.globalAlpha = 0.25 * (1 - d / magnetDist);
+            ctx.strokeStyle = '#00ff88';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 4]);
+            ctx.beginPath(); ctx.moveTo(o.x, o.y); ctx.lineTo(player.x, player.y); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
         ctx.fillStyle = '#00ff88';
         ctx.shadowColor = '#00ff88'; ctx.shadowBlur = 8 + Math.sin(t) * 3;
         ctx.beginPath(); ctx.arc(o.x, o.y, 5, 0, Math.PI * 2); ctx.fill();
@@ -2308,6 +2344,9 @@ function renderHUD() {
 
     // Boss HP bar
     renderBossHPBar();
+
+    // Minimap
+    renderMinimap();
 }
 
 function renderBossHPBar() {
@@ -2357,6 +2396,63 @@ function renderBossHPBar() {
     }
 }
 
+function renderTutorialTip() {
+    if (!tutorialTip) return;
+    const alpha = clamp(tutorialTip.t < 1 ? tutorialTip.t : (tutorialTip.mt - tutorialTip.t < 0.5 ? (tutorialTip.mt - tutorialTip.t) / 0.5 : 1), 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const tw = ctx.measureText(tutorialTip.text).width || 300;
+    ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center';
+    const bw = Math.max(tw + 40, ctx.measureText(tutorialTip.text).width + 40);
+    const bx = (W - bw) / 2, by = H - 130;
+    ctx.fillStyle = 'rgba(0,30,60,0.85)';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, 32, 6); ctx.fill();
+    ctx.strokeStyle = '#4af'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, 32, 6); ctx.stroke();
+    ctx.fillStyle = '#ddeeff';
+    ctx.fillText(tutorialTip.text, W / 2, by + 20);
+    ctx.restore();
+}
+
+function renderMinimap() {
+    const mw = 100, mh = 75;
+    const mx = W - mw - 8, my = 52;
+    const scaleX = mw / W, scaleY = mh / H;
+
+    // Background
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(mx, my, mw, mh);
+    ctx.strokeStyle = '#334'; ctx.lineWidth = 1;
+    ctx.strokeRect(mx, my, mw, mh);
+
+    // Obstacles
+    ctx.fillStyle = '#333';
+    for (const o of OBSTACLES) {
+        ctx.fillRect(mx + o.x * scaleX, my + o.y * scaleY, Math.max(2, o.w * scaleX), Math.max(1, o.h * scaleY));
+    }
+
+    // Enemies as dots
+    for (const e of enemies) {
+        if (e.dead) continue;
+        ctx.fillStyle = e.isBoss ? '#ff0000' : e.isElite ? '#ffaa00' : '#ff4444';
+        const dotR = e.isBoss ? 3 : e.isElite ? 2 : 1;
+        ctx.beginPath(); ctx.arc(mx + e.x * scaleX, my + e.y * scaleY, dotR, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Player
+    ctx.fillStyle = '#44ff44';
+    ctx.beginPath(); ctx.arc(mx + player.x * scaleX, my + player.y * scaleY, 2.5, 0, Math.PI * 2); ctx.fill();
+
+    // Drops (materials/xp as tiny dots)
+    ctx.fillStyle = '#ffdd00';
+    for (const d of matDrops) {
+        ctx.fillRect(mx + d.x * scaleX - 0.5, my + d.y * scaleY - 0.5, 1, 1);
+    }
+    ctx.restore();
+}
+
 function renderWeaponBar() {
     const sw = 48, sh = 48, pad = 5;
     const total = 6 * (sw + pad) - pad;
@@ -2375,6 +2471,25 @@ function renderWeaponBar() {
         if (w) {
             ctx.font = '22px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             ctx.fillText(w.emoji, x + sw / 2, y + sh / 2 - 3);
+
+            // Cooldown sweep overlay
+            const timer = player.weaponTimers[i] || 0;
+            const cooldown = (w.cooldown || 1) / (player.stats.atkSpd || 1);
+            if (timer > 0 && cooldown > 0) {
+                const cdPct = clamp(timer / cooldown, 0, 1);
+                ctx.save();
+                ctx.globalAlpha = 0.55;
+                ctx.fillStyle = '#000';
+                // Draw pie-shaped cooldown sweep
+                ctx.beginPath();
+                ctx.moveTo(x + sw / 2, y + sh / 2);
+                ctx.arc(x + sw / 2, y + sh / 2, sw / 2 + 2, -Math.PI / 2, -Math.PI / 2 + cdPct * Math.PI * 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+
+            // Level pips
             for (let l = 0; l < w.level; l++) {
                 ctx.fillStyle = '#ffcc00'; ctx.beginPath();
                 ctx.arc(x + 8 + l * 12, y + sh - 6, 4, 0, Math.PI * 2); ctx.fill();
@@ -3144,11 +3259,12 @@ function getComboMatBonus() {
 let runResults = null;
 let resultsAnimTimer = 0;
 
+const BEST_RUN_KEY = 'officewars_best_run';
+let bestRunStats = null;
+try { bestRunStats = JSON.parse(localStorage.getItem(BEST_RUN_KEY)); } catch { bestRunStats = null; }
+
 function buildRunResults(victory) {
-    // Count kills by type
-    const killsByType = {};
-    // We track total kills but not per-type during the run, so just use total
-    return {
+    const result = {
         victory,
         wave,
         totalKills: stats.kills,
@@ -3162,6 +3278,15 @@ function buildRunResults(victory) {
         character: selectedChar ? selectedChar.name : 'Developer',
         charEmoji: selectedChar ? selectedChar.emoji : '\u{1F9D1}\u200D\u{1F4BB}',
     };
+    // Update best run if this is better (higher wave, or same wave + more kills)
+    if (!bestRunStats || result.wave > bestRunStats.wave ||
+        (result.wave === bestRunStats.wave && result.totalKills > bestRunStats.totalKills)) {
+        result.isNewBest = true;
+        bestRunStats = { wave: result.wave, totalKills: result.totalKills, totalDamage: result.totalDamage,
+            highestCombo: result.highestCombo, timeSurvived: result.timeSurvived };
+        try { localStorage.setItem(BEST_RUN_KEY, JSON.stringify(bestRunStats)); } catch {}
+    }
+    return result;
 }
 
 function renderResultsScreen() {
@@ -3191,24 +3316,41 @@ function renderResultsScreen() {
     // Animated stats
     const elapsed = resultsAnimTimer;
     const stats_list = [
-        { label: 'Wave Reached', value: r.wave, delay: 0 },
-        { label: 'Total Kills', value: r.totalKills, delay: 0.4 },
-        { label: 'Damage Dealt', value: r.totalDamage, delay: 0.8 },
-        { label: 'Highest Combo', value: r.highestCombo, delay: 1.2 },
-        { label: 'Time Survived', value: r.timeSurvived, delay: 1.6, format: 'time' },
+        { label: 'Wave Reached', value: r.wave, delay: 0, bestKey: 'wave' },
+        { label: 'Total Kills', value: r.totalKills, delay: 0.4, bestKey: 'totalKills' },
+        { label: 'Damage Dealt', value: r.totalDamage, delay: 0.8, bestKey: 'totalDamage' },
+        { label: 'Highest Combo', value: r.highestCombo, delay: 1.2, bestKey: 'highestCombo' },
+        { label: 'Time Survived', value: r.timeSurvived, delay: 1.6, format: 'time', bestKey: 'timeSurvived' },
         { label: 'Materials', value: r.materialsCollected, delay: 2.0 },
     ];
 
-    let y = 130;
+    // New best banner
+    if (r.isNewBest && elapsed > 0.3) {
+        ctx.save();
+        ctx.fillStyle = '#ffdd00'; ctx.font = 'bold 18px Courier New'; ctx.textAlign = 'center';
+        ctx.shadowColor = '#fd0'; ctx.shadowBlur = 12;
+        const pulse = 1 + Math.sin(elapsed * 4) * 0.05;
+        ctx.scale(pulse, pulse);
+        ctx.fillText('\u2B50 NEW PERSONAL BEST! \u2B50', W / 2 / pulse, 115 / pulse);
+        ctx.restore();
+    }
+
+    let y = r.isNewBest ? 145 : 130;
     for (const s of stats_list) {
         if (elapsed < s.delay) continue;
         const progress = clamp((elapsed - s.delay) / 0.3, 0, 1);
         const rawVal = s.value * progress;
         const displayVal = s.format === 'time' ? formatTime(rawVal) : Math.floor(rawVal).toString();
         ctx.fillStyle = '#668'; ctx.font = '14px Courier New'; ctx.textAlign = 'left';
-        ctx.fillText(s.label, W / 2 - 120, y);
+        ctx.fillText(s.label, W / 2 - 140, y);
         ctx.fillStyle = '#fff'; ctx.textAlign = 'right';
-        ctx.fillText(displayVal, W / 2 + 120, y);
+        ctx.fillText(displayVal, W / 2 + 60, y);
+        // Best comparison
+        if (bestRunStats && !r.isNewBest && s.bestKey) {
+            const bestVal = bestRunStats[s.bestKey] || 0;
+            ctx.fillStyle = '#556'; ctx.font = '11px Courier New';
+            ctx.fillText(`best: ${s.format === 'time' ? formatTime(bestVal) : bestVal}`, W / 2 + 140, y);
+        }
         y += 26;
     }
 
